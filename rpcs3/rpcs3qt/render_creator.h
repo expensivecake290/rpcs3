@@ -37,6 +37,9 @@ public:
 	bool supports_vulkan = false;
 	QStringList vulkan_adapters;
 	render_info Vulkan;
+#ifdef HAVE_METAL
+	render_info Metal;
+#endif
 	render_info OpenGL;
 	render_info NullRender;
 	std::vector<render_info*> renderers;

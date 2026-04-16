@@ -8,6 +8,10 @@
 #include "Emu/RSX/VK/vkutils/instance.h"
 #endif
 
+#if defined(HAVE_METAL)
+#include "Emu/RSX/MTL/MTLDevice.h"
+#endif
+
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -96,24 +100,44 @@ render_creator::render_creator(QObject *parent) : QObject(parent)
 	}
 #endif
 
+#if defined(HAVE_METAL)
+	const bool supports_metal = rsx::metal::is_metal_supported();
+#endif
+
 	// Graphics Adapter
 	Vulkan = render_info(vulkan_adapters, supports_vulkan, emu_settings_type::VulkanAdapter);
+#if defined(HAVE_METAL)
+	Metal = render_info();
+	Metal.supported = supports_metal;
+#endif
 	OpenGL = render_info();
 	NullRender = render_info();
 
 #ifdef __APPLE__
 	OpenGL.supported = false;
 
-	if (!Vulkan.supported)
+	if (!Vulkan.supported
+#if defined(HAVE_METAL)
+		&& !Metal.supported
+#endif
+	)
 	{
 		QMessageBox::warning(nullptr,
 							 tr("Warning"),
-							 tr("Vulkan is not supported on this Mac.\n"
+							 tr("No supported graphics backend was found on this Mac.\n"
 								"No graphics will be rendered."));
 	}
 #endif
 
-	renderers = { &Vulkan, &OpenGL, &NullRender };
+	renderers =
+	{
+		&Vulkan,
+#if defined(HAVE_METAL)
+		&Metal,
+#endif
+		&OpenGL,
+		&NullRender
+	};
 }
 
 void render_creator::update_names(const QStringList& names)

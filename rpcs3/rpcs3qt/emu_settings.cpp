@@ -1065,6 +1065,9 @@ QString emu_settings::GetLocalizedSetting(const QString& original, emu_settings_
 		case video_renderer::null: return tr("Disable Video Output", "Video renderer");
 		case video_renderer::opengl: return tr("OpenGL", "Video renderer");
 		case video_renderer::vulkan: return tr("Vulkan", "Video renderer");
+#ifdef HAVE_METAL
+		case video_renderer::metal: return tr("Metal", "Video renderer");
+#endif
 		}
 		break;
 	case emu_settings_type::ShaderMode:

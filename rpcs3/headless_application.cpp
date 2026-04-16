@@ -81,6 +81,9 @@ void headless_application::InitializeCallbacks()
 		}
 		case video_renderer::opengl:
 		case video_renderer::vulkan:
+#ifdef HAVE_METAL
+		case video_renderer::metal:
+#endif
 		{
 			fmt::throw_exception("Headless mode can only be used with the %s video renderer. Current renderer: %s", video_renderer::null, type);
 			[[fallthrough]];

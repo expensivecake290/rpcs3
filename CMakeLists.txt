@@ -36,6 +36,7 @@ option(USE_FAUDIO "FAudio audio backend" ON)
 option(USE_LIBEVDEV "libevdev-based joystick support" ON)
 option(USE_DISCORD_RPC "Discord rich presence integration" OFF)
 option(USE_VULKAN "Vulkan render backend" ON)
+option(USE_METAL "Metal render backend" ON)
 option(USE_PRECOMPILED_HEADERS "Use precompiled headers" OFF)
 option(USE_SDL "Enables SDL input handler" ON)
 option(USE_SYSTEM_CUBEB "Prefer system cubeb instead of the builtin one" OFF)
@@ -65,6 +66,10 @@ option(RUN_RPCS3_TESTS "Run RPCS3 unit tests. Requires BUILD_RPCS3_TESTS" OFF)
 option(USE_GAMEMODE "Choose whether to enable GameMode features or not." ON)
 
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/buildfiles/cmake")
+
+if(APPLE AND USE_METAL)
+    enable_language(OBJCXX)
+endif()
 
 include(CheckCXXCompilerFlag)
 

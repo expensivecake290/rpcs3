@@ -61,6 +61,10 @@
 #include "Emu/RSX/VK/VKGSRender.h"
 #endif
 
+#if defined(HAVE_METAL)
+#include "Emu/RSX/MTL/MTLGSRender.h"
+#endif
+
 #ifdef _WIN32
 #include <Usbiodef.h>
 #include <Dbt.h>
@@ -586,6 +590,12 @@ std::unique_ptr<gs_frame> gui_application::get_gs_frame()
 
 	switch (g_cfg.video.renderer.get())
 	{
+#if defined(HAVE_METAL)
+	case video_renderer::metal:
+	{
+		fmt::throw_exception("Metal backend owns its native macOS rendering window and must not request a Qt game frame");
+	}
+#endif
 	case video_renderer::opengl:
 	{
 		frame = new gl_gs_frame(screen, frame_geometry, app_icon, m_gui_settings, m_start_games_fullscreen);
@@ -681,6 +691,13 @@ void gui_application::InitializeCallbacks()
 #endif
 			break;
 		}
+#if defined(HAVE_METAL)
+		case video_renderer::metal:
+		{
+			g_fxo->init<rsx::thread, named_thread<MTLGSRender>>(ar);
+			break;
+		}
+#endif
 		}
 	};
 

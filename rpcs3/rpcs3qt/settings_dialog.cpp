@@ -379,6 +379,9 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	r_creator->update_names(
 	{
 		m_emu_settings->GetLocalizedSetting(QString("Vulkan"), emu_settings_type::Renderer, static_cast<int>(video_renderer::vulkan), true),
+#if defined(HAVE_METAL)
+		m_emu_settings->GetLocalizedSetting(QString("Metal"), emu_settings_type::Renderer, static_cast<int>(video_renderer::metal), true),
+#endif
 		m_emu_settings->GetLocalizedSetting(QString("OpenGl"), emu_settings_type::Renderer, static_cast<int>(video_renderer::opengl), true),
 		m_emu_settings->GetLocalizedSetting(QString("Null"), emu_settings_type::Renderer, static_cast<int>(video_renderer::null), true)
 	});

@@ -646,6 +646,42 @@ if(TARGET 3rdparty_vulkan)
     endif()
 endif()
 
+if(APPLE AND USE_METAL)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+        find_library(METAL_FRAMEWORK Metal REQUIRED)
+        find_library(METALFX_FRAMEWORK MetalFX REQUIRED)
+        find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
+        find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
+
+        set(RPCS3_MTL_OBJCXX_SOURCES
+            RSX/MTL/MTLCommandBuffer.mm
+            RSX/MTL/MTLCommandQueue.mm
+            RSX/MTL/MTLDevice.mm
+            RSX/MTL/MTLNativeWindow.mm
+            RSX/MTL/MTLPresentation.mm
+        )
+
+        target_sources(rpcs3_emu PRIVATE
+            ${RPCS3_MTL_OBJCXX_SOURCES}
+            RSX/MTL/MTLGSRender.cpp
+        )
+
+        set_source_files_properties(${RPCS3_MTL_OBJCXX_SOURCES} PROPERTIES
+            COMPILE_FLAGS "-fobjc-arc"
+        )
+
+        target_compile_definitions(rpcs3_emu PUBLIC HAVE_METAL)
+        target_link_libraries(rpcs3_emu PRIVATE
+            ${APPKIT_FRAMEWORK}
+            ${METAL_FRAMEWORK}
+            ${METALFX_FRAMEWORK}
+            ${QUARTZCORE_FRAMEWORK}
+        )
+    else()
+        message(WARNING "USE_METAL was enabled, but native Metal backend support is limited to macOS Apple Silicon.")
+    endif()
+endif()
+
 if(NOT WIN32)
     set(THREADS_PREFER_PTHREAD_FLAG ON)
 endif()
