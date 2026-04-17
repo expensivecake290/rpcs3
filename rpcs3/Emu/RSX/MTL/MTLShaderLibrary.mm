@@ -60,6 +60,7 @@ namespace rsx::metal
 		shader_compiler& m_compiler;
 		persistent_shader_cache& m_cache;
 		NSMutableDictionary<NSString*, id<MTLDynamicLibrary>>* m_dynamic_libraries = nil;
+		NSMutableSet<NSString*>* m_disk_loaded_libraries = nil;
 		u32 m_loaded_libraries = 0;
 		u32 m_compiled_libraries = 0;
 
@@ -78,6 +79,7 @@ namespace rsx::metal
 		if (@available(macOS 26.0, *))
 		{
 			m_impl->m_dynamic_libraries = [NSMutableDictionary dictionary];
+			m_impl->m_disk_loaded_libraries = [NSMutableSet set];
 		}
 		else
 		{
@@ -108,7 +110,7 @@ namespace rsx::metal
 		const std::string library_path = dynamic_library_path(m_impl->m_cache, shader);
 		NSString* key = make_ns_string(library_path);
 
-		if ([m_impl->m_dynamic_libraries objectForKey:key])
+		if (id<MTLDynamicLibrary> cached_library = [m_impl->m_dynamic_libraries objectForKey:key])
 		{
 			return
 			{
@@ -117,7 +119,8 @@ namespace rsx::metal
 				.source_hash = shader.source_hash,
 				.entry_point = shader.entry_point,
 				.dynamic_library_path = library_path,
-				.loaded_from_disk = true,
+				.dynamic_library_handle = (__bridge void*)cached_library,
+				.loaded_from_disk = [m_impl->m_disk_loaded_libraries containsObject:key],
 			};
 		}
 
@@ -138,6 +141,7 @@ namespace rsx::metal
 				else
 				{
 					[m_impl->m_dynamic_libraries setObject:dynamic_library forKey:key];
+					[m_impl->m_disk_loaded_libraries addObject:key];
 					m_impl->m_loaded_libraries++;
 
 					return
@@ -147,6 +151,7 @@ namespace rsx::metal
 						.source_hash = shader.source_hash,
 						.entry_point = shader.entry_point,
 						.dynamic_library_path = library_path,
+						.dynamic_library_handle = (__bridge void*)dynamic_library,
 						.loaded_from_disk = true,
 					};
 				}
@@ -199,6 +204,7 @@ namespace rsx::metal
 				.source_hash = shader.source_hash,
 				.entry_point = shader.entry_point,
 				.dynamic_library_path = library_path,
+				.dynamic_library_handle = (__bridge void*)dynamic_library,
 				.loaded_from_disk = false,
 			};
 		}

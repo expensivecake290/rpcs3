@@ -660,6 +660,8 @@ if(APPLE AND USE_METAL)
             RSX/MTL/MTLDevice.mm
             RSX/MTL/MTLLifetime.mm
             RSX/MTL/MTLNativeWindow.mm
+            RSX/MTL/MTLPipelineCache.mm
+            RSX/MTL/MTLPipelineState.mm
             RSX/MTL/MTLPresentation.mm
             RSX/MTL/MTLRenderTargets.mm
             RSX/MTL/MTLResidency.mm
@@ -674,6 +676,7 @@ if(APPLE AND USE_METAL)
             RSX/MTL/MTLGSRender.cpp
             RSX/MTL/MTLMSL.cpp
             RSX/MTL/MTLShaderCache.cpp
+            RSX/MTL/MTLShaderEntrypoint.cpp
             RSX/MTL/MTLShaderRecompiler.cpp
         )
 

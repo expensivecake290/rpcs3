@@ -48,6 +48,10 @@ void MTLGSRender::on_init_thread()
 	m_shader_library_cache->report();
 	m_shader_recompiler = std::make_unique<rsx::metal::shader_recompiler>(*m_shader_cache);
 	m_shader_recompiler->report();
+	m_pipeline_cache = std::make_unique<rsx::metal::pipeline_cache>(*m_shader_compiler, *m_shader_cache);
+	m_pipeline_cache->report();
+	m_render_pipeline_cache = std::make_unique<rsx::metal::render_pipeline_cache>(*m_shader_compiler, *m_shader_cache, *m_pipeline_cache);
+	m_render_pipeline_cache->report();
 
 	m_window = std::make_unique<rsx::metal::native_window>(initial_width, initial_height);
 	m_queue = std::make_unique<rsx::metal::command_queue>(*m_device);
@@ -67,9 +71,16 @@ void MTLGSRender::on_exit()
 		m_queue->wait_idle();
 	}
 
+	if (m_pipeline_cache)
+	{
+		m_pipeline_cache->flush();
+	}
+
 	m_presentation.reset();
 	m_queue.reset();
 	m_window.reset();
+	m_render_pipeline_cache.reset();
+	m_pipeline_cache.reset();
 	m_shader_recompiler.reset();
 	m_shader_library_cache.reset();
 	m_shader_compiler.reset();

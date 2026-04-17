@@ -79,6 +79,7 @@ namespace rsx::metal
 		m_archive_path = m_root_path + "archives/";
 		m_pipeline_script_path = m_root_path + "pipeline_scripts/";
 		m_manifest_path = m_root_path + "manifest.txt";
+		m_pipeline_script_file_path = m_pipeline_script_path + "pipelines.mtl4script";
 		m_pipeline_archive_file_path = m_archive_path + "pipelines.mtl4archive";
 
 		create_directory(m_root_path);
@@ -143,6 +144,12 @@ namespace rsx::metal
 	{
 		rsx_log.trace("rsx::metal::persistent_shader_cache::pipeline_script_path()");
 		return m_pipeline_script_path;
+	}
+
+	const std::string& persistent_shader_cache::pipeline_script_file_path() const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::pipeline_script_file_path()");
+		return m_pipeline_script_file_path;
 	}
 
 	const std::string& persistent_shader_cache::pipeline_archive_file_path() const

@@ -5,6 +5,8 @@
 #include "MTLCommandQueue.h"
 #include "MTLDevice.h"
 #include "MTLNativeWindow.h"
+#include "MTLPipelineCache.h"
+#include "MTLPipelineState.h"
 #include "MTLPresentation.h"
 #include "MTLShaderCache.h"
 #include "MTLShaderCompiler.h"
@@ -40,5 +42,7 @@ private:
 	std::unique_ptr<rsx::metal::shader_compiler> m_shader_compiler;
 	std::unique_ptr<rsx::metal::shader_library_cache> m_shader_library_cache;
 	std::unique_ptr<rsx::metal::shader_recompiler> m_shader_recompiler;
+	std::unique_ptr<rsx::metal::pipeline_cache> m_pipeline_cache;
+	std::unique_ptr<rsx::metal::render_pipeline_cache> m_render_pipeline_cache;
 	u64 m_frame_count = 0;
 };

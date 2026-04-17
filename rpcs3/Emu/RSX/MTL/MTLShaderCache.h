@@ -34,6 +34,7 @@ namespace rsx::metal
 		const std::string& pipeline_path() const;
 		const std::string& archive_path() const;
 		const std::string& pipeline_script_path() const;
+		const std::string& pipeline_script_file_path() const;
 		const std::string& pipeline_archive_file_path() const;
 		const shader_cache_stats& stats() const;
 
@@ -50,6 +51,7 @@ namespace rsx::metal
 		std::string m_pipeline_path;
 		std::string m_archive_path;
 		std::string m_pipeline_script_path;
+		std::string m_pipeline_script_file_path;
 		std::string m_manifest_path;
 		std::string m_pipeline_archive_file_path;
 		shader_cache_stats m_stats{};

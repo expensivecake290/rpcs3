@@ -19,6 +19,7 @@ namespace rsx::metal
 		u64 source_hash = 0;
 		std::string entry_point;
 		std::string dynamic_library_path;
+		void* dynamic_library_handle = nullptr;
 		b8 loaded_from_disk = false;
 	};
 

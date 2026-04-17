@@ -26,6 +26,12 @@ namespace rsx::metal
 		std::string entry_point;
 		std::string source;
 		std::string cache_path;
+		u64 pipeline_source_hash = 0;
+		std::string pipeline_entry_point;
+		std::string pipeline_source;
+		std::string pipeline_cache_path;
+		std::string pipeline_entry_error;
+		b8 pipeline_entry_available = false;
 	};
 
 	class shader_recompiler

@@ -3,6 +3,7 @@
 
 #include "MTLMSL.h"
 #include "MTLShaderCache.h"
+#include "MTLShaderEntrypoint.h"
 
 #include "Emu/RSX/Program/FragmentProgramDecompiler.h"
 #include "Emu/RSX/Program/ProgramStateCache.h"
@@ -84,11 +85,11 @@ namespace
 		return false;
 	}
 
-	std::string shader_cache_path(const rsx::metal::persistent_shader_cache& cache, const char* suffix, u64 hash)
-	{
-		rsx_log.trace("shader_cache_path(suffix=%s, hash=0x%x)", suffix, hash);
-		return cache.msl_path() + fmt::format("%llX.%s.msl", hash, suffix);
-	}
+		std::string shader_cache_path(const rsx::metal::persistent_shader_cache& cache, const char* suffix, u64 hash)
+		{
+			rsx_log.trace("shader_cache_path(suffix=%s, hash=0x%llx)", suffix, hash);
+			return cache.msl_path() + fmt::format("%llX.%s.msl", hash, suffix);
+		}
 
 	void store_shader_source(const std::string& path, const std::string& source)
 	{
@@ -466,7 +467,7 @@ namespace rsx::metal
 		const std::string path = shader_cache_path(m_cache, "vp", hash);
 		store_shader_source(path, source);
 
-		return
+		translated_shader shader =
 		{
 			.stage = shader_stage::vertex,
 			.id = id,
@@ -475,6 +476,9 @@ namespace rsx::metal
 			.source = source,
 			.cache_path = path,
 		};
+
+		mark_vertex_pipeline_entry_status(shader);
+		return shader;
 	}
 
 	translated_shader shader_recompiler::translate_fragment_program(const RSXFragmentProgram& program, u32 id)
@@ -493,7 +497,7 @@ namespace rsx::metal
 		const std::string path = shader_cache_path(m_cache, "fp", hash);
 		store_shader_source(path, source);
 
-		return
+		translated_shader shader =
 		{
 			.stage = shader_stage::fragment,
 			.id = id,
@@ -502,12 +506,16 @@ namespace rsx::metal
 			.source = source,
 			.cache_path = path,
 		};
+
+		mark_fragment_pipeline_entry_status(shader, program);
+		return shader;
 	}
 
 	void shader_recompiler::report() const
 	{
 		rsx_log.notice("rsx::metal::shader_recompiler::report()");
 		rsx_log.notice("Metal shader recompiler: MSL helper-function translation enabled for non-textured RSX vertex/fragment programs");
+		rsx_log.warning("Metal shader recompiler: pipeline entry points are gated until Phase 3 argument tables, vertex input fetch, and transform constants are implemented");
 		rsx_log.warning("Metal shader recompiler: texture sampling, discard, advanced fragment control flow, and mesh wrappers are gated until MSL/resource bindings are implemented");
 	}
-}
+	}
