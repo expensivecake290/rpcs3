@@ -1,6 +1,8 @@
 #include "stdafx.h"
 #include "MTLDevice.h"
 
+#include "MTLResidency.h"
+
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
@@ -15,16 +17,6 @@ namespace
 
 		const char* text = [value UTF8String];
 		return text ? std::string(text) : std::string();
-	}
-
-	std::string get_error_text(NSError* error)
-	{
-		if (!error)
-		{
-			return "unknown error";
-		}
-
-		return get_ns_string([error localizedDescription]);
 	}
 
 	b8 supports_metal4(id<MTLDevice> device)
@@ -48,7 +40,7 @@ namespace rsx::metal
 	struct device::device_impl
 	{
 		id<MTLDevice> m_device = nil;
-		id<MTLResidencySet> m_residency_set = nil;
+		std::unique_ptr<residency_manager> m_residency;
 		device_caps m_caps{};
 	};
 
@@ -84,22 +76,9 @@ namespace rsx::metal
 
 			if (@available(macOS 26.0, *))
 			{
-				MTLResidencySetDescriptor* residency_desc = [MTLResidencySetDescriptor new];
-				residency_desc.label = @"RPCS3 Metal residency set";
-				residency_desc.initialCapacity = 64;
-
-				NSError* residency_error = nil;
-				id<MTLResidencySet> residency_set = [metal_device newResidencySetWithDescriptor:residency_desc error:&residency_error];
-
-				if (!residency_set)
-				{
-					fmt::throw_exception("Metal backend failed to create residency set: %s", get_error_text(residency_error));
-				}
-
-				[residency_set requestResidency];
-
 				m_impl->m_device = metal_device;
-				m_impl->m_residency_set = residency_set;
+				m_impl->m_residency = std::make_unique<residency_manager>((__bridge void*)metal_device, "RPCS3 Metal backend residency set", 64);
+				m_impl->m_residency->request_residency();
 			}
 			else
 			{
@@ -120,11 +99,6 @@ namespace rsx::metal
 	device::~device()
 	{
 		rsx_log.notice("rsx::metal::device::~device()");
-
-		if (m_impl && m_impl->m_residency_set)
-		{
-			[m_impl->m_residency_set endResidency];
-		}
 	}
 
 	void* device::handle() const
@@ -136,7 +110,37 @@ namespace rsx::metal
 	void* device::residency_set_handle() const
 	{
 		rsx_log.trace("rsx::metal::device::residency_set_handle()");
-		return (__bridge void*)m_impl->m_residency_set;
+		return m_impl->m_residency->handle();
+	}
+
+	void device::add_resident_allocation(void* allocation_handle)
+	{
+		rsx_log.trace("rsx::metal::device::add_resident_allocation(allocation_handle=*0x%x)", allocation_handle);
+		m_impl->m_residency->add_allocation(allocation_handle);
+	}
+
+	void device::remove_resident_allocation(void* allocation_handle)
+	{
+		rsx_log.trace("rsx::metal::device::remove_resident_allocation(allocation_handle=*0x%x)", allocation_handle);
+		m_impl->m_residency->remove_allocation(allocation_handle);
+	}
+
+	void device::commit_residency()
+	{
+		rsx_log.trace("rsx::metal::device::commit_residency()");
+		m_impl->m_residency->commit();
+	}
+
+	u64 device::residency_allocated_size() const
+	{
+		rsx_log.trace("rsx::metal::device::residency_allocated_size()");
+		return m_impl->m_residency->allocated_size();
+	}
+
+	u32 device::residency_allocation_count() const
+	{
+		rsx_log.trace("rsx::metal::device::residency_allocation_count()");
+		return m_impl->m_residency->allocation_count();
 	}
 
 	const device_caps& device::caps() const
@@ -151,11 +155,13 @@ namespace rsx::metal
 		rsx_log.notice("Metal 4 support: %s", m_impl->m_caps.metal4_supported ? "yes" : "no");
 		rsx_log.notice("MetalFX framework availability: %s", m_impl->m_caps.metalfx_available ? "yes" : "no");
 		rsx_log.notice("Residency sets: %s", m_impl->m_caps.residency_sets_supported ? "yes" : "no");
+		rsx_log.notice("Backend residency set: allocations=%u, allocated_size=0x%x",
+			residency_allocation_count(), residency_allocated_size());
 		rsx_log.notice("Frames in flight: %u", m_impl->m_caps.frames_in_flight);
 		rsx_log.notice("MTL4ArgumentTable limits: buffers=%u, textures=%u, samplers=%u",
 			m_impl->m_caps.max_argument_table_buffers,
 			m_impl->m_caps.max_argument_table_textures,
 			m_impl->m_caps.max_argument_table_samplers);
-		rsx_log.warning("Metal shader cache, pipeline cache, binary archives, and MetalFX execution are not enabled in Phase 1");
+		rsx_log.warning("Metal RSX draw submission, argument tables, shader translation, pipeline creation, and MetalFX execution are not enabled yet");
 	}
 }

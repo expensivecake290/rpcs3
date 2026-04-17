@@ -1,6 +1,9 @@
 #include "stdafx.h"
 #include "MTLPresentation.h"
 
+#include "MTLRenderTargets.h"
+#include "MTLTexture.h"
+
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
@@ -86,17 +89,25 @@ namespace rsx::metal
 			fmt::throw_exception("Metal presentation requires macOS 26.0 or newer");
 		}
 
-		MTL4RenderPassDescriptor* pass_desc = [MTL4RenderPassDescriptor new];
-		MTLRenderPassColorAttachmentDescriptor* color = pass_desc.colorAttachments[0];
-		color.texture = drawable.texture;
-		color.loadAction = MTLLoadActionClear;
-		color.storeAction = MTLStoreActionStore;
-		color.clearColor = MTLClearColorMake(red, green, blue, alpha);
-		pass_desc.renderTargetWidth = m_impl->m_window.drawable_width();
-		pass_desc.renderTargetHeight = m_impl->m_window.drawable_height();
+		texture drawable_texture((__bridge void*)drawable.texture);
+		frame.track_object(drawable_texture.handle());
+		m_impl->m_device.add_resident_allocation(drawable_texture.handle());
+		m_impl->m_device.commit_residency();
+		device* metal_device = &m_impl->m_device;
+		frame.on_completed([metal_device, texture_handle = drawable_texture.handle()]()
+		{
+			metal_device->remove_resident_allocation(texture_handle);
+			metal_device->commit_residency();
+		});
+
+		drawable_render_target render_target(drawable_texture,
+			drawable_texture.width(),
+			drawable_texture.height(),
+			{ red, green, blue, alpha });
 
 		id<MTL4CommandBuffer> command_buffer = (__bridge id<MTL4CommandBuffer>)frame.command_buffer_handle();
-		id<MTL4RenderCommandEncoder> encoder = [command_buffer renderCommandEncoderWithDescriptor:pass_desc];
+		id<MTL4RenderCommandEncoder> encoder = [command_buffer renderCommandEncoderWithDescriptor:
+			(__bridge MTL4RenderPassDescriptor*)render_target.render_pass_descriptor_handle()];
 
 		if (!encoder)
 		{

@@ -654,16 +654,27 @@ if(APPLE AND USE_METAL)
         find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
 
         set(RPCS3_MTL_OBJCXX_SOURCES
+            RSX/MTL/MTLCommandAllocator.mm
             RSX/MTL/MTLCommandBuffer.mm
             RSX/MTL/MTLCommandQueue.mm
             RSX/MTL/MTLDevice.mm
+            RSX/MTL/MTLLifetime.mm
             RSX/MTL/MTLNativeWindow.mm
             RSX/MTL/MTLPresentation.mm
+            RSX/MTL/MTLRenderTargets.mm
+            RSX/MTL/MTLResidency.mm
+            RSX/MTL/MTLShaderCompiler.mm
+            RSX/MTL/MTLShaderLibrary.mm
+            RSX/MTL/MTLSynchronization.mm
+            RSX/MTL/MTLTexture.mm
         )
 
         target_sources(rpcs3_emu PRIVATE
             ${RPCS3_MTL_OBJCXX_SOURCES}
             RSX/MTL/MTLGSRender.cpp
+            RSX/MTL/MTLMSL.cpp
+            RSX/MTL/MTLShaderCache.cpp
+            RSX/MTL/MTLShaderRecompiler.cpp
         )
 
         set_source_files_properties(${RPCS3_MTL_OBJCXX_SOURCES} PROPERTIES

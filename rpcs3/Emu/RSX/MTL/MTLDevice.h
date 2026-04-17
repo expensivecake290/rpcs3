@@ -32,6 +32,11 @@ namespace rsx::metal
 
 		void* handle() const;
 		void* residency_set_handle() const;
+		void add_resident_allocation(void* allocation_handle);
+		void remove_resident_allocation(void* allocation_handle);
+		void commit_residency();
+		u64 residency_allocated_size() const;
+		u32 residency_allocation_count() const;
 
 		const device_caps& caps() const;
 		void report_capabilities() const;

@@ -2,7 +2,9 @@
 
 #include "util/types.hpp"
 
+#include <functional>
 #include <memory>
+#include <span>
 
 namespace rsx::metal
 {
@@ -18,13 +20,17 @@ namespace rsx::metal
 		void begin();
 		void end();
 		void wait_until_available();
-		void mark_submitted();
-		void mark_completed();
+		u64 arm_completion_signal();
+		void signal_completion(void* queue_handle) const;
+		void mark_completed(u64 signal_value);
 		void use_residency_set(void* residency_set_handle);
 		void track_object(void* object_handle);
+		void on_completed(std::function<void()> callback);
 
 		void* command_buffer_handle() const;
+		std::span<void* const> command_buffer_handles() const;
 		u32 frame_index() const;
+		u64 completion_value() const;
 
 	private:
 		struct command_frame_impl;

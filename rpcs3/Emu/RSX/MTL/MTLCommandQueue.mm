@@ -3,6 +3,8 @@
 
 #import <Metal/Metal.h>
 
+#include <vector>
+
 namespace
 {
 	std::string get_ns_string(NSString* value)
@@ -80,13 +82,20 @@ namespace rsx::metal
 		rsx_log.trace("rsx::metal::command_queue::submit_frame(frame_index=%u, drawable_handle=*0x%x)",
 			frame.frame_index(), drawable_handle);
 
-		id<MTL4CommandBuffer> command_buffer = (__bridge id<MTL4CommandBuffer>)frame.command_buffer_handle();
 		id<MTLDrawable> drawable = (__bridge id<MTLDrawable>)drawable_handle;
-
-		frame.mark_submitted();
 
 		if (@available(macOS 26.0, *))
 		{
+			std::vector<id<MTL4CommandBuffer>> command_buffers;
+			for (void* command_buffer_handle : frame.command_buffer_handles())
+			{
+				command_buffers.emplace_back((__bridge id<MTL4CommandBuffer>)command_buffer_handle);
+			}
+
+			ensure(!command_buffers.empty());
+
+			const u64 signal_value = frame.arm_completion_signal();
+
 			MTL4CommitOptions* options = [MTL4CommitOptions new];
 			command_frame* submitted_frame = &frame;
 
@@ -96,29 +105,32 @@ namespace rsx::metal
 				{
 					rsx_log.error("Metal command queue reported GPU execution error: %s",
 						get_ns_string([feedback.error localizedDescription]));
+					submitted_frame->mark_completed(signal_value);
 				}
-
-				submitted_frame->mark_completed();
 			}];
-
-			const id<MTL4CommandBuffer> command_buffers[] = { command_buffer };
 
 			if (drawable)
 			{
 				[m_impl->m_queue waitForDrawable:drawable];
 			}
 
-			[m_impl->m_queue commit:command_buffers count:1 options:options];
+			[m_impl->m_queue commit:command_buffers.data() count:command_buffers.size() options:options];
 
 			if (drawable)
 			{
 				[m_impl->m_queue signalDrawable:drawable];
+			}
+
+			frame.signal_completion((__bridge void*)m_impl->m_queue);
+
+			if (drawable)
+			{
 				[drawable present];
 			}
 		}
 		else
 		{
-			frame.mark_completed();
+			frame.mark_completed(frame.completion_value());
 			fmt::throw_exception("Metal command queue submission requires macOS 26.0 or newer");
 		}
 	}

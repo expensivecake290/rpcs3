@@ -6,6 +6,10 @@
 #include "MTLDevice.h"
 #include "MTLNativeWindow.h"
 #include "MTLPresentation.h"
+#include "MTLShaderCache.h"
+#include "MTLShaderCompiler.h"
+#include "MTLShaderLibrary.h"
+#include "MTLShaderRecompiler.h"
 
 #include <memory>
 
@@ -32,5 +36,9 @@ private:
 	std::unique_ptr<rsx::metal::native_window> m_window;
 	std::unique_ptr<rsx::metal::command_queue> m_queue;
 	std::unique_ptr<rsx::metal::presentation_surface> m_presentation;
+	std::unique_ptr<rsx::metal::persistent_shader_cache> m_shader_cache;
+	std::unique_ptr<rsx::metal::shader_compiler> m_shader_compiler;
+	std::unique_ptr<rsx::metal::shader_library_cache> m_shader_library_cache;
+	std::unique_ptr<rsx::metal::shader_recompiler> m_shader_recompiler;
 	u64 m_frame_count = 0;
 };
