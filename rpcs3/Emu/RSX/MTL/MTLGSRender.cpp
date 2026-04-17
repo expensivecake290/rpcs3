@@ -52,6 +52,7 @@ void MTLGSRender::on_init_thread()
 	m_pipeline_cache->report();
 	m_render_pipeline_cache = std::make_unique<rsx::metal::render_pipeline_cache>(*m_shader_compiler, *m_shader_cache, *m_pipeline_cache);
 	m_render_pipeline_cache->report();
+	report_backend_state();
 
 	m_window = std::make_unique<rsx::metal::native_window>(initial_width, initial_height);
 	m_queue = std::make_unique<rsx::metal::command_queue>(*m_device);
@@ -125,6 +126,67 @@ f64 MTLGSRender::get_display_refresh_rate() const
 	}
 
 	return 60.;
+}
+
+void MTLGSRender::report_backend_state() const
+{
+	rsx_log.notice("MTLGSRender::report_backend_state()");
+
+	if (!m_device || !m_shader_cache || !m_shader_library_cache || !m_pipeline_cache || !m_render_pipeline_cache)
+	{
+		rsx_log.warning("Metal backend state report skipped because initialization is incomplete");
+		return;
+	}
+
+	const rsx::metal::device_caps& caps = m_device->caps();
+	const rsx::metal::shader_cache_stats& cache_stats = m_shader_cache->stats();
+	const rsx::metal::shader_compiler_stats compiler_stats = m_shader_compiler->stats();
+	const rsx::metal::shader_library_cache_stats library_stats = m_shader_library_cache->stats();
+	const rsx::metal::pipeline_cache_stats pipeline_stats = m_pipeline_cache->stats();
+	const rsx::metal::render_pipeline_cache_stats render_pipeline_stats = m_render_pipeline_cache->stats();
+
+	rsx_log.notice("Metal backend state: device=%s, metal4=%u, frames_in_flight=%u, residency_allocations=%u, residency_size=0x%x",
+		caps.name,
+		static_cast<u32>(caps.metal4_supported),
+		caps.frames_in_flight,
+		m_device->residency_allocation_count(),
+		m_device->residency_allocated_size());
+	rsx_log.notice("Metal backend cache state: source_metadata=%u, pipeline_entries=%u, dynamic_libraries=%u, pipeline_archives=%u",
+		cache_stats.shader_entries,
+		cache_stats.pipeline_entries,
+		cache_stats.library_entries,
+		cache_stats.archive_entries);
+	rsx_log.notice("Metal backend compiler/archive state: compiler_ready=%u, serializer_ready=%u, archive_metadata=%u, archive_loaded=%u, archive_load_failed=%u, archive_without_metadata=%u",
+		static_cast<u32>(compiler_stats.compiler_ready),
+		static_cast<u32>(compiler_stats.pipeline_serializer_ready),
+		static_cast<u32>(compiler_stats.archive_metadata_found),
+		static_cast<u32>(compiler_stats.archive_loaded),
+		static_cast<u32>(compiler_stats.archive_load_failed),
+		static_cast<u32>(compiler_stats.archive_without_metadata));
+	rsx_log.notice("Metal backend shader-library workflow: memory_hits=%u, disk_hits=%u, disk_file_misses=%u, compiled=%u, retained=%u",
+		library_stats.memory_hits,
+		library_stats.loaded_libraries,
+		library_stats.disk_file_misses,
+		library_stats.compiled_libraries,
+		library_stats.retained_libraries);
+	rsx_log.notice("Metal backend pipeline cache workflow: pending=%u, flushed=%u, successful_flushes=%u, skipped_flushes=%u, serializer_failures=%u, archive_failures=%u",
+		pipeline_stats.pending_pipeline_count,
+		pipeline_stats.flushed_pipeline_count,
+		pipeline_stats.successful_flush_count,
+		pipeline_stats.skipped_flush_count,
+		pipeline_stats.serializer_missing_failures,
+		pipeline_stats.archive_serialization_failures);
+	rsx_log.notice("Metal backend render pipeline state cache: render_compiled=%u, render_hits=%u, render_retained=%u, mesh_compiled=%u, mesh_hits=%u, mesh_retained=%u",
+		render_pipeline_stats.compiled_render_pipeline_count,
+		render_pipeline_stats.render_pipeline_cache_hit_count,
+		render_pipeline_stats.retained_render_pipeline_count,
+		render_pipeline_stats.compiled_mesh_pipeline_count,
+		render_pipeline_stats.mesh_pipeline_cache_hit_count,
+		render_pipeline_stats.retained_mesh_pipeline_count);
+	rsx_log.notice("Metal backend render pipeline compile failures: render=%u, mesh=%u",
+		render_pipeline_stats.render_pipeline_compile_failure_count,
+		render_pipeline_stats.mesh_pipeline_compile_failure_count);
+	rsx_log.warning("Metal backend render pipeline entrypoints remain gated; helper MSL, shader source metadata, dynamic libraries, and pipeline archive plumbing are initialized only for validated Phase 4 paths");
 }
 
 void MTLGSRender::present_clear_frame()

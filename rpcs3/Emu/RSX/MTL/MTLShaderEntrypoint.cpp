@@ -2,6 +2,7 @@
 #include "MTLShaderEntrypoint.h"
 
 #include "MTLPipelineState.h"
+#include "MTLMeshPipelinePlan.h"
 #include "MTLShaderEntrypointBuilder.h"
 #include "MTLShaderInterface.h"
 
@@ -142,20 +143,14 @@ namespace rsx::metal
 
 		validate_helper_shader(shader, shader_stage::mesh);
 
-		const u32 requirement_mask =
-			pipeline_requirement(pipeline_entry_requirement::argument_table_shader_binding) |
-			pipeline_requirement(pipeline_entry_requirement::mesh_object_mapping) |
-			pipeline_requirement(pipeline_entry_requirement::mesh_grid_mapping);
-
-		const shader_interface_layout layout = make_mesh_shader_interface_layout();
-		rsx_log.notice("Metal mesh shader interface: %s", describe_shader_interface_layout(layout));
-		rsx_log.notice("Metal mesh shader stage I/O: %s", describe_shader_stage_io_layout(layout));
+		const mesh_pipeline_plan plan = make_mesh_pipeline_plan();
+		rsx_log.notice("Metal mesh pipeline plan: %s", describe_mesh_pipeline_plan(plan));
 
 		apply_pipeline_entry_build_result(shader, build_pipeline_entry_source(
 			shader,
-			layout,
-			requirement_mask,
-			"Metal mesh pipeline entry generation is gated until RSX-to-MSL mesh/object shader mapping, mesh grid dispatch layout, and argument-table shader binding are implemented"));
+			plan.interface_layout,
+			plan.requirement_mask,
+			plan.gated_reason));
 	}
 
 	void report_shader_pipeline_entry_status(const translated_shader& shader)

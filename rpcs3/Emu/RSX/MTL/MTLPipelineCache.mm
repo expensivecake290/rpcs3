@@ -37,6 +37,11 @@ namespace rsx::metal
 		persistent_shader_cache& m_cache;
 		u32 m_dirty_pipeline_count = 0;
 		u32 m_flushed_pipeline_count = 0;
+		u32 m_skipped_flush_count = 0;
+		u32 m_successful_flush_count = 0;
+		u32 m_serializer_missing_failures = 0;
+		u32 m_script_serialization_failures = 0;
+		u32 m_archive_serialization_failures = 0;
 
 		pipeline_cache_impl(shader_compiler& compiler, persistent_shader_cache& cache)
 			: m_compiler(compiler)
@@ -68,6 +73,7 @@ namespace rsx::metal
 
 		if (!m_impl->m_dirty_pipeline_count)
 		{
+			m_impl->m_skipped_flush_count++;
 			rsx_log.trace("Metal pipeline cache flush skipped because no Metal pipeline states were compiled");
 			return;
 		}
@@ -79,6 +85,7 @@ namespace rsx::metal
 
 			if (!serializer)
 			{
+				m_impl->m_serializer_missing_failures++;
 				fmt::throw_exception("Metal pipeline cache flush requires a pipeline data set serializer");
 			}
 
@@ -87,6 +94,7 @@ namespace rsx::metal
 			if (!pipeline_script)
 			{
 				const std::string error = script_error ? get_ns_string([script_error localizedDescription]) : "unknown error";
+				m_impl->m_script_serialization_failures++;
 				fmt::throw_exception("Metal pipeline cache failed to serialize pipeline script: %s", error);
 			}
 
@@ -101,6 +109,7 @@ namespace rsx::metal
 			if (![serializer serializeAsArchiveAndFlushToURL:make_file_url(archive_path) error:&archive_error])
 			{
 				const std::string error = archive_error ? get_ns_string([archive_error localizedDescription]) : "unknown error";
+				m_impl->m_archive_serialization_failures++;
 				fmt::throw_exception("Metal pipeline cache failed to serialize pipeline archive '%s': %s", archive_path, error);
 			}
 
@@ -110,6 +119,7 @@ namespace rsx::metal
 				m_impl->m_flushed_pipeline_count + m_impl->m_dirty_pipeline_count);
 			m_impl->m_flushed_pipeline_count += m_impl->m_dirty_pipeline_count;
 			m_impl->m_dirty_pipeline_count = 0;
+			m_impl->m_successful_flush_count++;
 		}
 		else
 		{
@@ -117,12 +127,39 @@ namespace rsx::metal
 		}
 	}
 
+	pipeline_cache_stats pipeline_cache::stats() const
+	{
+		rsx_log.trace("rsx::metal::pipeline_cache::stats()");
+
+		return
+		{
+			.pending_pipeline_count = m_impl->m_dirty_pipeline_count,
+			.flushed_pipeline_count = m_impl->m_flushed_pipeline_count,
+			.skipped_flush_count = m_impl->m_skipped_flush_count,
+			.successful_flush_count = m_impl->m_successful_flush_count,
+			.serializer_missing_failures = m_impl->m_serializer_missing_failures,
+			.script_serialization_failures = m_impl->m_script_serialization_failures,
+			.archive_serialization_failures = m_impl->m_archive_serialization_failures,
+			.script_path = m_impl->m_cache.pipeline_script_file_path(),
+			.archive_path = m_impl->m_cache.pipeline_archive_file_path(),
+		};
+	}
+
 	void pipeline_cache::report() const
 	{
 		rsx_log.notice("rsx::metal::pipeline_cache::report()");
-			rsx_log.notice("Metal pipeline cache: pending=%u, flushed=%u, archive=%s",
-				m_impl->m_dirty_pipeline_count,
-				m_impl->m_flushed_pipeline_count,
-				m_impl->m_cache.pipeline_archive_file_path().c_str());
-		}
+		const pipeline_cache_stats cache_stats = stats();
+		rsx_log.notice("Metal pipeline cache: pending=%u, flushed=%u, successful_flushes=%u, skipped_flushes=%u",
+			cache_stats.pending_pipeline_count,
+			cache_stats.flushed_pipeline_count,
+			cache_stats.successful_flush_count,
+			cache_stats.skipped_flush_count);
+		rsx_log.notice("Metal pipeline cache paths: script=%s, archive=%s",
+			cache_stats.script_path,
+			cache_stats.archive_path);
+		rsx_log.notice("Metal pipeline cache failures: serializer_missing=%u, script_serialization=%u, archive_serialization=%u",
+			cache_stats.serializer_missing_failures,
+			cache_stats.script_serialization_failures,
+			cache_stats.archive_serialization_failures);
 	}
+}

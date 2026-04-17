@@ -24,6 +24,22 @@ namespace rsx::metal
 		b8 loaded_from_disk = false;
 	};
 
+	struct shader_library_cache_stats
+	{
+		u32 memory_hits = 0;
+		u32 disk_probes = 0;
+		u32 disk_file_misses = 0;
+		u32 loaded_libraries = 0;
+		u32 compiled_libraries = 0;
+		u32 source_metadata_misses = 0;
+		u32 library_metadata_misses = 0;
+		u32 disk_load_failures = 0;
+		u32 source_compile_failures = 0;
+		u32 dynamic_library_failures = 0;
+		u32 serialization_failures = 0;
+		u32 retained_libraries = 0;
+	};
+
 	class shader_library_cache
 	{
 	public:
@@ -34,6 +50,7 @@ namespace rsx::metal
 		shader_library_cache& operator=(const shader_library_cache&) = delete;
 
 		shader_library_record get_or_compile_dynamic_library(const translated_shader& shader);
+		shader_library_cache_stats stats() const;
 		void report() const;
 
 	private:

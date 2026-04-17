@@ -6,6 +6,16 @@
 
 namespace rsx::metal
 {
+	struct shader_source_metadata
+	{
+		std::string stage;
+		u32 shader_id = 0;
+		u64 source_hash = 0;
+		u64 source_text_hash = 0;
+		std::string entry_point;
+		std::string source_path;
+	};
+
 	struct pipeline_entry_metadata
 	{
 		std::string stage;
@@ -16,6 +26,7 @@ namespace rsx::metal
 		std::string source_path;
 		std::string entry_error;
 		u32 requirement_mask = 0;
+		std::string requirement_description;
 		b8 entry_available = false;
 	};
 
@@ -58,6 +69,21 @@ namespace rsx::metal
 
 		void initialize();
 		void report() const;
+		void store_shader_source_metadata(
+			const char* stage,
+			u32 shader_id,
+			u64 source_hash,
+			u64 source_text_hash,
+			const std::string& entry_point,
+			const std::string& source_path);
+		shader_source_metadata load_shader_source_metadata(const std::string& path) const;
+		b8 find_shader_source_metadata(
+			const char* stage,
+			u64 source_hash,
+			u64 source_text_hash,
+			const std::string& entry_point,
+			const std::string& source_path,
+			shader_source_metadata& metadata) const;
 		void store_pipeline_entry_metadata(
 			const char* stage,
 			u32 shader_id,
@@ -106,9 +132,11 @@ namespace rsx::metal
 	private:
 		void create_directory(const std::string& path) const;
 		void validate_manifest() const;
+		std::string shader_source_metadata_path(const char* stage, u64 source_hash) const;
 		std::string pipeline_entry_metadata_path(const char* stage, u64 source_hash) const;
 		std::string shader_library_metadata_path(const char* stage, u64 source_hash) const;
 		std::string pipeline_archive_metadata_path() const;
+		u32 count_shader_source_metadata() const;
 		u32 count_pipeline_entry_metadata() const;
 		u32 count_shader_library_metadata() const;
 		u32 count_pipeline_archive_metadata() const;

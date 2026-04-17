@@ -5,6 +5,7 @@
 #include "MTLDevice.h"
 #include "MTLSampler.h"
 #include "MTLTexture.h"
+#include "MTLTextureViewPool.h"
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -91,11 +92,12 @@ namespace
 
 namespace rsx::metal
 {
-	struct argument_table::argument_table_impl
-	{
-		id<MTL4ArgumentTable> m_table = nil;
-		argument_table_desc m_desc{};
-	};
+		struct argument_table::argument_table_impl
+		{
+			id<MTL4ArgumentTable> m_table = nil;
+			std::unique_ptr<texture_view_pool> m_texture_views;
+			argument_table_desc m_desc{};
+		};
 
 	argument_table::argument_table(device& dev, const argument_table_desc& desc)
 		: m_impl(std::make_unique<argument_table_impl>())
@@ -158,15 +160,21 @@ namespace rsx::metal
 				}
 
 				fmt::throw_exception("Metal argument table creation failed: %s", message);
-			}
+				}
 
-			m_impl->m_desc = desc;
-		}
+				m_impl->m_desc = desc;
+			}
 		else
 		{
-			fmt::throw_exception("Metal argument table creation requires macOS 26.0 or newer");
+				fmt::throw_exception("Metal argument table creation requires macOS 26.0 or newer");
+			}
+
+			if (desc.max_textures)
+			{
+				m_impl->m_texture_views = std::make_unique<texture_view_pool>(dev, desc.max_textures,
+					desc.label.empty() ? "RPCS3 Metal argument texture views" : desc.label + " texture views");
+			}
 		}
-	}
 
 	argument_table::~argument_table()
 	{
@@ -293,10 +301,15 @@ namespace rsx::metal
 				index, m_impl->m_desc.max_textures);
 		}
 
-		const u64 resource_id = tex.resource_id();
-		if (!resource_id)
-		{
-			fmt::throw_exception("Metal argument table texture binding requires a non-zero resource ID");
+			if (!m_impl->m_texture_views)
+			{
+				fmt::throw_exception("Metal argument table texture binding requires a texture view pool");
+			}
+
+			const u64 resource_id = m_impl->m_texture_views->set_default_texture_view(index, tex);
+			if (!resource_id)
+			{
+				fmt::throw_exception("Metal argument table texture binding requires a non-zero resource ID");
 		}
 
 		if (@available(macOS 26.0, *))

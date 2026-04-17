@@ -38,7 +38,10 @@ namespace rsx::metal
 		MTL4CompilerTaskOptions* m_task_options = nil;
 		id<MTL4Archive> m_archive = nil;
 		std::string m_archive_path;
+		b8 m_archive_metadata_found = false;
 		b8 m_archive_loaded = false;
+		b8 m_archive_without_metadata = false;
+		b8 m_archive_load_failed = false;
 	};
 
 	shader_compiler::shader_compiler(device& metal_device, const persistent_shader_cache& cache)
@@ -77,12 +80,14 @@ namespace rsx::metal
 			m_impl->m_archive_path = cache.pipeline_archive_file_path();
 			if (cache.find_pipeline_archive_metadata(archive_metadata))
 			{
+				m_impl->m_archive_metadata_found = true;
 				NSError* archive_error = nil;
 				m_impl->m_archive = [device newArchiveWithURL:make_file_url(archive_metadata.archive_path) error:&archive_error];
 
 				if (!m_impl->m_archive)
 				{
 					const std::string error = archive_error ? get_ns_string([archive_error localizedDescription]) : "unknown error";
+					m_impl->m_archive_load_failed = true;
 					rsx_log.warning("Metal pipeline archive load failed for '%s': %s", archive_metadata.archive_path, error);
 				}
 				else
@@ -94,6 +99,7 @@ namespace rsx::metal
 			}
 			else if (fs::is_file(m_impl->m_archive_path))
 			{
+				m_impl->m_archive_without_metadata = true;
 				rsx_log.warning("Metal pipeline archive exists without valid metadata and will not be used: %s", m_impl->m_archive_path);
 			}
 
@@ -117,11 +123,31 @@ namespace rsx::metal
 	void shader_compiler::report() const
 	{
 		rsx_log.notice("rsx::metal::shader_compiler::report()");
-		rsx_log.notice("Metal 4 compiler: ready");
-		rsx_log.notice("Metal 4 pipeline data serializer: ready");
-		rsx_log.notice("Metal 4 lookup archive: %s (%s)",
-			m_impl->m_archive_loaded ? "loaded" : "not loaded",
-			m_impl->m_archive_path);
+		const shader_compiler_stats compiler_stats = stats();
+		rsx_log.notice("Metal 4 compiler: %s", compiler_stats.compiler_ready ? "ready" : "missing");
+		rsx_log.notice("Metal 4 pipeline data serializer: %s", compiler_stats.pipeline_serializer_ready ? "ready" : "missing");
+		rsx_log.notice("Metal 4 lookup archive: metadata=%u, loaded=%u, load_failed=%u, archive_without_metadata=%u, path=%s",
+			static_cast<u32>(compiler_stats.archive_metadata_found),
+			static_cast<u32>(compiler_stats.archive_loaded),
+			static_cast<u32>(compiler_stats.archive_load_failed),
+			static_cast<u32>(compiler_stats.archive_without_metadata),
+			compiler_stats.archive_path);
+	}
+
+	shader_compiler_stats shader_compiler::stats() const
+	{
+		rsx_log.trace("rsx::metal::shader_compiler::stats()");
+
+		return
+		{
+			.compiler_ready = m_impl->m_compiler != nil,
+			.pipeline_serializer_ready = m_impl->m_pipeline_serializer != nil,
+			.archive_metadata_found = m_impl->m_archive_metadata_found,
+			.archive_loaded = m_impl->m_archive_loaded,
+			.archive_without_metadata = m_impl->m_archive_without_metadata,
+			.archive_load_failed = m_impl->m_archive_load_failed,
+			.archive_path = m_impl->m_archive_path,
+		};
 	}
 
 	void* shader_compiler::compiler_handle() const

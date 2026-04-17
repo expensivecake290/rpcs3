@@ -32,6 +32,7 @@ private:
 	void flip(const rsx::display_flip_info_t& info) override;
 	f64 get_display_refresh_rate() const override;
 
+	void report_backend_state() const;
 	void present_clear_frame();
 
 	std::unique_ptr<rsx::metal::device> m_device;

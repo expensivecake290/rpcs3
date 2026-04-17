@@ -1,11 +1,25 @@
 #pragma once
 
+#include "util/types.hpp"
+
 #include <memory>
+#include <string>
 
 namespace rsx::metal
 {
 	class device;
 	class persistent_shader_cache;
+
+	struct shader_compiler_stats
+	{
+		b8 compiler_ready = false;
+		b8 pipeline_serializer_ready = false;
+		b8 archive_metadata_found = false;
+		b8 archive_loaded = false;
+		b8 archive_without_metadata = false;
+		b8 archive_load_failed = false;
+		std::string archive_path;
+	};
 
 	class shader_compiler
 	{
@@ -17,6 +31,7 @@ namespace rsx::metal
 		shader_compiler& operator=(const shader_compiler&) = delete;
 
 		void report() const;
+		shader_compiler_stats stats() const;
 		void* compiler_handle() const;
 		void* pipeline_serializer_handle() const;
 		void* task_options_handle() const;

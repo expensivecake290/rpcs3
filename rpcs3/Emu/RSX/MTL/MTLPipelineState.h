@@ -51,6 +51,18 @@ namespace rsx::metal
 		b8 cached = false;
 	};
 
+	struct render_pipeline_cache_stats
+	{
+		u32 compiled_render_pipeline_count = 0;
+		u32 render_pipeline_cache_hit_count = 0;
+		u32 retained_render_pipeline_count = 0;
+		u32 render_pipeline_compile_failure_count = 0;
+		u32 compiled_mesh_pipeline_count = 0;
+		u32 mesh_pipeline_cache_hit_count = 0;
+		u32 retained_mesh_pipeline_count = 0;
+		u32 mesh_pipeline_compile_failure_count = 0;
+	};
+
 	struct mesh_threadgroup_size
 	{
 		u32 width = 0;
@@ -93,6 +105,7 @@ namespace rsx::metal
 
 		render_pipeline_record get_or_compile_render_pipeline(const render_pipeline_desc& desc);
 		render_pipeline_record get_or_compile_mesh_pipeline(const mesh_pipeline_desc& desc);
+		render_pipeline_cache_stats stats() const;
 		void report() const;
 
 	private:

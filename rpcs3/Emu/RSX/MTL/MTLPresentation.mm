@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "MTLPresentation.h"
 
+#include "MTLBarrier.h"
 #include "MTLRenderTargets.h"
 #include "MTLTexture.h"
 
@@ -90,15 +91,20 @@ namespace rsx::metal
 		}
 
 		texture drawable_texture((__bridge void*)drawable.texture);
-		frame.track_object(drawable_texture.handle());
-		m_impl->m_device.add_resident_allocation(drawable_texture.handle());
-		m_impl->m_device.commit_residency();
-		device* metal_device = &m_impl->m_device;
-		frame.on_completed([metal_device, texture_handle = drawable_texture.handle()]()
+		frame.track_resident_allocation(m_impl->m_device, drawable_texture.handle());
+
+		const resource_barrier barrier = frame.track_resource_usage(resource_usage
 		{
-			metal_device->remove_resident_allocation(texture_handle);
-			metal_device->commit_residency();
+			.resource_id = drawable_texture.resource_id(),
+			.stage = resource_stage::render,
+			.access = resource_access::write,
+			.scope = resource_barrier_scope::render_targets
 		});
+
+		if (barrier.required)
+		{
+			fmt::throw_exception("Metal presentation clear encountered an unencoded drawable write hazard");
+		}
 
 		drawable_render_target render_target(drawable_texture,
 			drawable_texture.width(),
@@ -114,6 +120,7 @@ namespace rsx::metal
 			fmt::throw_exception("Metal failed to create render command encoder for presentation clear");
 		}
 
+		encode_consumer_barrier((__bridge void*)encoder, barrier);
 		[encoder endEncoding];
 		frame.end();
 		queue.submit_frame(frame, (__bridge void*)drawable);

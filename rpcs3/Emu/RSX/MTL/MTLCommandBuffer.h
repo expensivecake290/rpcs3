@@ -1,5 +1,6 @@
 #pragma once
 
+#include "MTLResourceState.h"
 #include "util/types.hpp"
 
 #include <functional>
@@ -8,6 +9,8 @@
 
 namespace rsx::metal
 {
+	class device;
+
 	class command_frame
 	{
 	public:
@@ -25,6 +28,8 @@ namespace rsx::metal
 		void mark_completed(u64 signal_value);
 		void use_residency_set(void* residency_set_handle);
 		void track_object(void* object_handle);
+		void track_resident_allocation(device& metal_device, void* allocation_handle);
+		resource_barrier track_resource_usage(const resource_usage& usage);
 		void on_completed(std::function<void()> callback);
 
 		void* command_buffer_handle() const;

@@ -655,6 +655,7 @@ if(APPLE AND USE_METAL)
 
         set(RPCS3_MTL_OBJCXX_SOURCES
             RSX/MTL/MTLArgumentTable.mm
+            RSX/MTL/MTLBarrier.mm
             RSX/MTL/MTLBuffer.mm
             RSX/MTL/MTLCommandAllocator.mm
             RSX/MTL/MTLCommandBuffer.mm
@@ -672,12 +673,15 @@ if(APPLE AND USE_METAL)
             RSX/MTL/MTLSampler.mm
             RSX/MTL/MTLSynchronization.mm
             RSX/MTL/MTLTexture.mm
+            RSX/MTL/MTLTextureViewPool.mm
         )
 
         target_sources(rpcs3_emu PRIVATE
             ${RPCS3_MTL_OBJCXX_SOURCES}
             RSX/MTL/MTLGSRender.cpp
+            RSX/MTL/MTLMeshPipelinePlan.cpp
             RSX/MTL/MTLMSL.cpp
+            RSX/MTL/MTLResourceState.cpp
             RSX/MTL/MTLShaderCache.cpp
             RSX/MTL/MTLShaderEntrypoint.cpp
             RSX/MTL/MTLShaderEntrypointBuilder.cpp

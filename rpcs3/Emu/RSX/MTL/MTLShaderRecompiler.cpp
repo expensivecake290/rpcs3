@@ -5,6 +5,7 @@
 #include "MTLPipelineState.h"
 #include "MTLShaderCache.h"
 #include "MTLShaderEntrypoint.h"
+#include "MTLShaderInterface.h"
 
 #include "Emu/RSX/Program/FragmentProgramDecompiler.h"
 #include "Emu/RSX/Program/ProgramStateCache.h"
@@ -12,59 +13,46 @@
 #include "Emu/RSX/Program/RSXVertexProgram.h"
 #include "Emu/RSX/Program/VertexProgramDecompiler.h"
 #include "Utilities/File.h"
+#include "util/fnv_hash.hpp"
 
 #include <array>
 
 namespace
 {
-	constexpr std::array<std::string_view, 16> s_vertex_inputs =
+	const rsx::metal::shader_vertex_input_slot& vertex_input_slot_at_location(int location)
 	{
-		"in_pos",
-		"in_weight",
-		"in_normal",
-		"in_diff_color",
-		"in_spec_color",
-		"in_fog",
-		"in_point_size",
-		"in_7",
-		"in_tc0",
-		"in_tc1",
-		"in_tc2",
-		"in_tc3",
-		"in_tc4",
-		"in_tc5",
-		"in_tc6",
-		"in_tc7",
-	};
+		rsx_log.trace("vertex_input_slot_at_location(location=%d)", location);
 
-	int fragment_input_index(std::string_view name)
+		if (location < 0)
+		{
+			fmt::throw_exception("Metal vertex shader input location is negative: %d", location);
+		}
+
+		const u32 attribute_index = static_cast<u32>(location);
+		const auto& slots = rsx::metal::vertex_input_slots();
+		if (attribute_index >= slots.size())
+		{
+			fmt::throw_exception("Metal vertex shader input location is out of range: %u", attribute_index);
+		}
+
+		const rsx::metal::shader_vertex_input_slot& slot = slots[attribute_index];
+		if (slot.attribute_index != attribute_index)
+		{
+			fmt::throw_exception("Metal vertex shader input slot table is not ordered at index %u", attribute_index);
+		}
+
+		return slot;
+	}
+
+	u32 fragment_input_index(std::string_view name)
 	{
 		rsx_log.trace("fragment_input_index(name=%s)", name);
 
-		static constexpr std::array<std::string_view, 15> s_fragment_inputs =
+		for (const rsx::metal::shader_named_slot& slot : rsx::metal::fragment_input_slots())
 		{
-			"wpos",
-			"diff_color",
-			"spec_color",
-			"fogc",
-			"tc0",
-			"tc1",
-			"tc2",
-			"tc3",
-			"tc4",
-			"tc5",
-			"tc6",
-			"tc7",
-			"tc8",
-			"tc9",
-			"ssa",
-		};
-
-		for (u32 index = 0; index < s_fragment_inputs.size(); index++)
-		{
-			if (s_fragment_inputs[index] == name)
+			if (slot.name == name)
 			{
-				return index;
+				return slot.index;
 			}
 		}
 
@@ -90,6 +78,51 @@ namespace
 	{
 		rsx_log.trace("shader_cache_path(suffix=%s, hash=0x%llx)", suffix, hash);
 		return cache.msl_path() + fmt::format("%llX.%s.msl", hash, suffix);
+	}
+
+	u64 shader_source_text_hash(std::string_view source)
+	{
+		rsx_log.trace("shader_source_text_hash(size=0x%x)", source.size());
+
+		usz hash = rpcs3::fnv_seed;
+		for (const char c : source)
+		{
+			hash = rpcs3::hash64(hash, static_cast<u8>(c));
+		}
+
+		return static_cast<u64>(hash);
+	}
+
+	void validate_translated_shader_source(const char* stage, const std::string& entry_point, const std::string& source)
+	{
+		rsx_log.trace("validate_translated_shader_source(stage=%s, entry_point=%s, size=0x%x)",
+			stage ? stage : "<null>", entry_point.c_str(), static_cast<u32>(source.size()));
+
+		if (!stage || !stage[0])
+		{
+			fmt::throw_exception("Metal shader source validation requires a stage");
+		}
+
+		if (entry_point.empty())
+		{
+			fmt::throw_exception("Metal %s shader source validation requires an entry point", stage);
+		}
+
+		if (source.empty())
+		{
+			fmt::throw_exception("Metal %s shader source validation requires non-empty MSL", stage);
+		}
+
+		if (source.find("#include <metal_stdlib>") == std::string::npos)
+		{
+			fmt::throw_exception("Metal %s shader source is missing the MSL standard library include", stage);
+		}
+
+		const std::string function_decl = fmt::format("void %s(", entry_point);
+		if (source.find(function_decl) == std::string::npos)
+		{
+			fmt::throw_exception("Metal %s shader source does not contain helper entry '%s'", stage, entry_point);
+		}
 	}
 
 	const char* pipeline_entry_stage_suffix(rsx::metal::shader_stage stage)
@@ -137,19 +170,74 @@ namespace
 			pipeline_shader.entry_point != shader.pipeline_entry_point ||
 			pipeline_shader.entry_error != shader.pipeline_entry_error ||
 			pipeline_shader.requirement_mask != shader.pipeline_requirement_mask ||
-			pipeline_shader.entry_available != shader.pipeline_entry_available)
+			pipeline_shader.entry_available != shader.pipeline_entry_available ||
+			metadata.requirement_description != rsx::metal::describe_pipeline_entry_requirements(shader.pipeline_requirement_mask))
 		{
 			fmt::throw_exception("Metal pipeline entry metadata round-trip mismatch for stage=%s, source_hash=0x%llx", stage, shader.source_hash);
 		}
 	}
 
-	void store_shader_source(const std::string& path, const std::string& source)
+	u64 store_shader_source(const char* stage, const std::string& path, const std::string& entry_point, const std::string& source)
 	{
-		rsx_log.trace("store_shader_source(path=%s, size=0x%x)", path, source.size());
+		rsx_log.trace("store_shader_source(stage=%s, path=%s, entry_point=%s, size=0x%x)",
+			stage ? stage : "<null>", path, entry_point, static_cast<u32>(source.size()));
+
+		validate_translated_shader_source(stage, entry_point, source);
+		const u64 source_text_hash = shader_source_text_hash(source);
+
+		if (fs::is_file(path))
+		{
+			fs::file file{path, fs::read};
+			if (!file)
+			{
+				fmt::throw_exception("Metal %s shader cache entry '%s' exists but is not readable", stage, path);
+			}
+
+			const std::string cached_source = file.to_string();
+			if (cached_source == source)
+			{
+				rsx_log.trace("Metal %s shader source cache hit: %s", stage, path);
+				return source_text_hash;
+			}
+
+			rsx_log.warning("Metal %s shader source cache mismatch for '%s'; rewriting cached helper MSL", stage, path);
+		}
 
 		if (!fs::write_file(path, fs::rewrite, source))
 		{
-			fmt::throw_exception("Failed to write Metal shader source '%s' (%s)", path, fs::g_tls_error);
+			fmt::throw_exception("Failed to write Metal %s shader source '%s' (%s)", stage, path, fs::g_tls_error);
+		}
+
+		fs::file written_file{path, fs::read};
+		if (!written_file || written_file.to_string() != source)
+		{
+			fmt::throw_exception("Metal %s shader source cache verification failed for '%s'", stage, path);
+		}
+
+		return source_text_hash;
+	}
+
+	void store_shader_source_metadata(
+		rsx::metal::persistent_shader_cache& cache,
+		const rsx::metal::translated_shader& shader,
+		u64 source_text_hash)
+	{
+		rsx_log.trace("store_shader_source_metadata(stage=%u, id=%u, source_hash=0x%llx, source_text_hash=0x%llx)",
+			static_cast<u32>(shader.stage), shader.id, shader.source_hash, source_text_hash);
+
+		const char* stage = pipeline_entry_stage_suffix(shader.stage);
+		cache.store_shader_source_metadata(
+			stage,
+			shader.id,
+			shader.source_hash,
+			source_text_hash,
+			shader.entry_point,
+			shader.cache_path);
+
+		rsx::metal::shader_source_metadata metadata;
+		if (!cache.find_shader_source_metadata(stage, shader.source_hash, source_text_hash, shader.entry_point, shader.cache_path, metadata))
+		{
+			fmt::throw_exception("Metal shader source metadata lookup failed after storing stage=%s, source_hash=0x%llx", stage, shader.source_hash);
 		}
 	}
 
@@ -218,8 +306,8 @@ namespace
 			stream <<
 				"struct rpcs3_mtl_vertex_context\n"
 				"{\n"
-				"	float4 input[16];\n"
-				"	float4 output[16];\n"
+				"	float4 input[" << rsx::metal::shader_vertex_input_count << "];\n"
+				"	float4 output[" << rsx::metal::shader_vertex_output_count << "];\n"
 				"	constant float4* constants;\n"
 				"};\n\n";
 		}
@@ -282,8 +370,14 @@ namespace
 			{
 				for (const ParamItem& item : param_type.items)
 				{
-					ensure(item.location >= 0 && item.location < static_cast<int>(s_vertex_inputs.size()));
-					stream << "\t" << param_type.type << " " << item.name << " = ctx.input[" << item.location << "];\n";
+					const rsx::metal::shader_vertex_input_slot& slot = vertex_input_slot_at_location(item.location);
+					if (slot.name != item.name)
+					{
+						fmt::throw_exception("Metal vertex input location %u is named '%s' but RSX decompiler emitted '%s'",
+							slot.attribute_index, std::string(slot.name), item.name);
+					}
+
+					stream << "\t" << param_type.type << " " << item.name << " = ctx.input[" << slot.attribute_index << "];\n";
 				}
 			}
 
@@ -294,12 +388,12 @@ namespace
 		{
 			rsx_log.trace("metal_vertex_decompiler::insertMainEnd()");
 
-			for (u32 index = 0; index < 16; index++)
+			for (const rsx::metal::shader_named_slot& slot : rsx::metal::vertex_output_slots())
 			{
-				const std::string output_name = fmt::format("dst_reg%u", index);
+				const std::string output_name = std::string(slot.name);
 				if (m_parr.HasParam(PF_PARAM_OUT, "float4", output_name))
 				{
-					stream << "\tctx.output[" << index << "] = " << output_name << ";\n";
+					stream << "\tctx.output[" << slot.index << "] = " << output_name << ";\n";
 				}
 			}
 
@@ -381,8 +475,8 @@ namespace
 			stream <<
 				"struct rpcs3_mtl_fragment_context\n"
 				"{\n"
-				"	float4 input[15];\n"
-				"	float4 output[4];\n"
+				"	float4 input[" << rsx::metal::shader_fragment_input_count << "];\n"
+				"	float4 output[" << rsx::metal::shader_fragment_color_output_count << "];\n"
 				"	float depth;\n"
 				"	constant float4* constants;\n"
 				"	bool discarded;\n"
@@ -466,6 +560,11 @@ namespace
 			const auto& outputs = (m_prog.ctrl & CELL_GCM_SHADER_CONTROL_32_BITS_EXPORTS) ? s_fp32_outputs : s_fp16_outputs;
 			for (const auto& [name, index] : outputs)
 			{
+				if (index >= rsx::metal::fragment_color_output_slots().size())
+				{
+					fmt::throw_exception("Metal fragment output index %u exceeds color output slots", index);
+				}
+
 				if (index >= m_prog.mrt_buffers_count)
 				{
 					continue;
@@ -517,7 +616,7 @@ namespace rsx::metal
 		const std::string source = decompiler.translate();
 		const u64 hash = static_cast<u64>(program_hash_util::vertex_program_utils::get_vertex_program_ucode_hash(program));
 		const std::string path = shader_cache_path(m_cache, "vp", hash);
-		store_shader_source(path, source);
+		const u64 source_text_hash = store_shader_source("vertex", path, decompiler.entry_point(), source);
 
 		translated_shader shader =
 		{
@@ -529,6 +628,7 @@ namespace rsx::metal
 			.cache_path = path,
 		};
 
+		store_shader_source_metadata(m_cache, shader, source_text_hash);
 		mark_vertex_pipeline_entry_status(shader);
 		store_pipeline_entry_metadata(m_cache, shader);
 		report_shader_pipeline_entry_status(shader);
@@ -549,7 +649,7 @@ namespace rsx::metal
 		const std::string source = decompiler.translate();
 		const u64 hash = static_cast<u64>(program_hash_util::fragment_program_utils::get_fragment_program_ucode_hash(program));
 		const std::string path = shader_cache_path(m_cache, "fp", hash);
-		store_shader_source(path, source);
+		const u64 source_text_hash = store_shader_source("fragment", path, decompiler.entry_point(), source);
 
 		translated_shader shader =
 		{
@@ -561,6 +661,7 @@ namespace rsx::metal
 			.cache_path = path,
 		};
 
+		store_shader_source_metadata(m_cache, shader, source_text_hash);
 		mark_fragment_pipeline_entry_status(shader, program);
 		store_pipeline_entry_metadata(m_cache, shader);
 		report_shader_pipeline_entry_status(shader);
@@ -574,4 +675,4 @@ namespace rsx::metal
 		rsx_log.warning("Metal shader recompiler: pipeline entry points are gated until argument-table shader binding, vertex input fetch, and transform constants are implemented");
 		rsx_log.warning("Metal shader recompiler: texture sampling, discard, advanced fragment control flow, and mesh wrappers are gated until MSL/resource bindings are implemented");
 	}
-	}
+}

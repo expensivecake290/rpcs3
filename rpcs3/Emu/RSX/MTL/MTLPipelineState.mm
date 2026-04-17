@@ -217,6 +217,8 @@ namespace rsx::metal
 		u32 m_compiled_mesh_pipelines = 0;
 		u32 m_cache_hits = 0;
 		u32 m_mesh_cache_hits = 0;
+		u32 m_pipeline_compile_failures = 0;
+		u32 m_mesh_pipeline_compile_failures = 0;
 
 		render_pipeline_cache_impl(shader_compiler& compiler, persistent_shader_cache& cache, pipeline_cache& pipelines)
 			: m_compiler(compiler)
@@ -346,6 +348,7 @@ namespace rsx::metal
 			{
 				const std::string message = error ? get_ns_string([error localizedDescription]) : "unknown error";
 				const std::string label = get_ns_string(pipeline_desc.label);
+				m_impl->m_pipeline_compile_failures++;
 				fmt::throw_exception("Metal render pipeline compilation failed for '%s': %s", label.c_str(), message.c_str());
 			}
 
@@ -493,6 +496,7 @@ namespace rsx::metal
 			{
 				const std::string message = error ? get_ns_string([error localizedDescription]) : "unknown error";
 				const std::string label = get_ns_string(pipeline_desc.label);
+				m_impl->m_mesh_pipeline_compile_failures++;
 				fmt::throw_exception("Metal mesh pipeline compilation failed for '%s': %s", label.c_str(), message.c_str());
 			}
 
@@ -511,16 +515,37 @@ namespace rsx::metal
 		fmt::throw_exception("Metal mesh pipeline compilation requires macOS 26.0 or newer");
 	}
 
+	render_pipeline_cache_stats render_pipeline_cache::stats() const
+	{
+		rsx_log.trace("rsx::metal::render_pipeline_cache::stats()");
+
+		return
+		{
+			.compiled_render_pipeline_count = m_impl->m_compiled_pipelines,
+			.render_pipeline_cache_hit_count = m_impl->m_cache_hits,
+			.retained_render_pipeline_count = static_cast<u32>(m_impl->m_render_pipelines.count),
+			.render_pipeline_compile_failure_count = m_impl->m_pipeline_compile_failures,
+			.compiled_mesh_pipeline_count = m_impl->m_compiled_mesh_pipelines,
+			.mesh_pipeline_cache_hit_count = m_impl->m_mesh_cache_hits,
+			.retained_mesh_pipeline_count = static_cast<u32>(m_impl->m_mesh_pipelines.count),
+			.mesh_pipeline_compile_failure_count = m_impl->m_mesh_pipeline_compile_failures,
+		};
+	}
+
 	void render_pipeline_cache::report() const
 	{
 		rsx_log.notice("rsx::metal::render_pipeline_cache::report()");
+		const render_pipeline_cache_stats pipeline_stats = stats();
 		rsx_log.notice("Metal render pipelines: compiled=%u, cache_hits=%u, retained=%u",
-			m_impl->m_compiled_pipelines,
-			m_impl->m_cache_hits,
-			static_cast<u32>(m_impl->m_render_pipelines.count));
+			pipeline_stats.compiled_render_pipeline_count,
+			pipeline_stats.render_pipeline_cache_hit_count,
+			pipeline_stats.retained_render_pipeline_count);
 		rsx_log.notice("Metal mesh pipelines: compiled=%u, cache_hits=%u, retained=%u",
-			m_impl->m_compiled_mesh_pipelines,
-			m_impl->m_mesh_cache_hits,
-			static_cast<u32>(m_impl->m_mesh_pipelines.count));
+			pipeline_stats.compiled_mesh_pipeline_count,
+			pipeline_stats.mesh_pipeline_cache_hit_count,
+			pipeline_stats.retained_mesh_pipeline_count);
+		rsx_log.notice("Metal pipeline compile failures: render=%u, mesh=%u",
+			pipeline_stats.render_pipeline_compile_failure_count,
+			pipeline_stats.mesh_pipeline_compile_failure_count);
 	}
 }
