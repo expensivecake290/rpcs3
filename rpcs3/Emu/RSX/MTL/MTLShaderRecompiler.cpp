@@ -2,6 +2,7 @@
 #include "MTLShaderRecompiler.h"
 
 #include "MTLMSL.h"
+#include "MTLPipelineState.h"
 #include "MTLShaderCache.h"
 #include "MTLShaderEntrypoint.h"
 
@@ -85,11 +86,62 @@ namespace
 		return false;
 	}
 
-		std::string shader_cache_path(const rsx::metal::persistent_shader_cache& cache, const char* suffix, u64 hash)
+	std::string shader_cache_path(const rsx::metal::persistent_shader_cache& cache, const char* suffix, u64 hash)
+	{
+		rsx_log.trace("shader_cache_path(suffix=%s, hash=0x%llx)", suffix, hash);
+		return cache.msl_path() + fmt::format("%llX.%s.msl", hash, suffix);
+	}
+
+	const char* pipeline_entry_stage_suffix(rsx::metal::shader_stage stage)
+	{
+		rsx_log.trace("pipeline_entry_stage_suffix(stage=%u)", static_cast<u32>(stage));
+
+		switch (stage)
 		{
-			rsx_log.trace("shader_cache_path(suffix=%s, hash=0x%llx)", suffix, hash);
-			return cache.msl_path() + fmt::format("%llX.%s.msl", hash, suffix);
+		case rsx::metal::shader_stage::vertex:
+			return "vp";
+		case rsx::metal::shader_stage::fragment:
+			return "fp";
+		case rsx::metal::shader_stage::mesh:
+			return "mesh";
 		}
+
+		fmt::throw_exception("Unknown Metal shader stage %u", static_cast<u32>(stage));
+	}
+
+	void store_pipeline_entry_metadata(rsx::metal::persistent_shader_cache& cache, const rsx::metal::translated_shader& shader)
+	{
+		rsx_log.trace("store_pipeline_entry_metadata(stage=%u, id=%u, source_hash=0x%llx)",
+			static_cast<u32>(shader.stage), shader.id, shader.source_hash);
+
+		const char* stage = pipeline_entry_stage_suffix(shader.stage);
+		cache.store_pipeline_entry_metadata(
+			stage,
+			shader.id,
+			shader.source_hash,
+			shader.pipeline_source_hash,
+			shader.pipeline_entry_point,
+			shader.pipeline_cache_path,
+			shader.pipeline_entry_error,
+			shader.pipeline_requirement_mask,
+			shader.pipeline_entry_available);
+
+		rsx::metal::pipeline_entry_metadata metadata;
+		if (!cache.find_pipeline_entry_metadata(stage, shader.source_hash, metadata))
+		{
+			fmt::throw_exception("Metal pipeline entry metadata lookup failed after storing stage=%s, source_hash=0x%llx", stage, shader.source_hash);
+		}
+
+		const rsx::metal::render_pipeline_shader pipeline_shader = rsx::metal::make_render_pipeline_shader(metadata);
+		if (pipeline_shader.source_hash != shader.pipeline_source_hash ||
+			pipeline_shader.entry_point != shader.pipeline_entry_point ||
+			pipeline_shader.entry_error != shader.pipeline_entry_error ||
+			pipeline_shader.requirement_mask != shader.pipeline_requirement_mask ||
+			pipeline_shader.entry_available != shader.pipeline_entry_available)
+		{
+			fmt::throw_exception("Metal pipeline entry metadata round-trip mismatch for stage=%s, source_hash=0x%llx", stage, shader.source_hash);
+		}
+	}
 
 	void store_shader_source(const std::string& path, const std::string& source)
 	{
@@ -478,6 +530,8 @@ namespace rsx::metal
 		};
 
 		mark_vertex_pipeline_entry_status(shader);
+		store_pipeline_entry_metadata(m_cache, shader);
+		report_shader_pipeline_entry_status(shader);
 		return shader;
 	}
 
@@ -508,6 +562,8 @@ namespace rsx::metal
 		};
 
 		mark_fragment_pipeline_entry_status(shader, program);
+		store_pipeline_entry_metadata(m_cache, shader);
+		report_shader_pipeline_entry_status(shader);
 		return shader;
 	}
 
@@ -515,7 +571,7 @@ namespace rsx::metal
 	{
 		rsx_log.notice("rsx::metal::shader_recompiler::report()");
 		rsx_log.notice("Metal shader recompiler: MSL helper-function translation enabled for non-textured RSX vertex/fragment programs");
-		rsx_log.warning("Metal shader recompiler: pipeline entry points are gated until Phase 3 argument tables, vertex input fetch, and transform constants are implemented");
+		rsx_log.warning("Metal shader recompiler: pipeline entry points are gated until argument-table shader binding, vertex input fetch, and transform constants are implemented");
 		rsx_log.warning("Metal shader recompiler: texture sampling, discard, advanced fragment control flow, and mesh wrappers are gated until MSL/resource bindings are implemented");
 	}
 	}

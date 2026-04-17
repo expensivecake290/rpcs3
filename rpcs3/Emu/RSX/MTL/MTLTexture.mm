@@ -34,6 +34,12 @@ namespace rsx::metal
 		return (__bridge void*)m_impl->m_texture;
 	}
 
+	u64 texture::resource_id() const
+	{
+		rsx_log.trace("rsx::metal::texture::resource_id()");
+		return m_impl->m_texture.gpuResourceID._impl;
+	}
+
 	u32 texture::width() const
 	{
 		rsx_log.trace("rsx::metal::texture::width()");

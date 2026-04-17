@@ -9,4 +9,5 @@ namespace rsx::metal
 	void mark_vertex_pipeline_entry_status(translated_shader& shader);
 	void mark_fragment_pipeline_entry_status(translated_shader& shader, const RSXFragmentProgram& program);
 	void mark_mesh_pipeline_entry_status(translated_shader& shader);
+	void report_shader_pipeline_entry_status(const translated_shader& shader);
 }

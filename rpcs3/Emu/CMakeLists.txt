@@ -654,6 +654,8 @@ if(APPLE AND USE_METAL)
         find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
 
         set(RPCS3_MTL_OBJCXX_SOURCES
+            RSX/MTL/MTLArgumentTable.mm
+            RSX/MTL/MTLBuffer.mm
             RSX/MTL/MTLCommandAllocator.mm
             RSX/MTL/MTLCommandBuffer.mm
             RSX/MTL/MTLCommandQueue.mm
@@ -667,6 +669,7 @@ if(APPLE AND USE_METAL)
             RSX/MTL/MTLResidency.mm
             RSX/MTL/MTLShaderCompiler.mm
             RSX/MTL/MTLShaderLibrary.mm
+            RSX/MTL/MTLSampler.mm
             RSX/MTL/MTLSynchronization.mm
             RSX/MTL/MTLTexture.mm
         )
@@ -677,6 +680,8 @@ if(APPLE AND USE_METAL)
             RSX/MTL/MTLMSL.cpp
             RSX/MTL/MTLShaderCache.cpp
             RSX/MTL/MTLShaderEntrypoint.cpp
+            RSX/MTL/MTLShaderEntrypointBuilder.cpp
+            RSX/MTL/MTLShaderInterface.cpp
             RSX/MTL/MTLShaderRecompiler.cpp
         )
 

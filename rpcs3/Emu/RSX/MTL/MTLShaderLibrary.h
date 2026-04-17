@@ -17,6 +17,7 @@ namespace rsx::metal
 		shader_stage stage = shader_stage::vertex;
 		u32 id = 0;
 		u64 source_hash = 0;
+		u64 source_text_hash = 0;
 		std::string entry_point;
 		std::string dynamic_library_path;
 		void* dynamic_library_handle = nullptr;

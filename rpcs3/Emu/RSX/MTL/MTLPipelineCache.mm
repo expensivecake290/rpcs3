@@ -104,6 +104,10 @@ namespace rsx::metal
 				fmt::throw_exception("Metal pipeline cache failed to serialize pipeline archive '%s': %s", archive_path, error);
 			}
 
+			m_impl->m_cache.store_pipeline_archive_metadata(
+				script_path,
+				archive_path,
+				m_impl->m_flushed_pipeline_count + m_impl->m_dirty_pipeline_count);
 			m_impl->m_flushed_pipeline_count += m_impl->m_dirty_pipeline_count;
 			m_impl->m_dirty_pipeline_count = 0;
 		}

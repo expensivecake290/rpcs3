@@ -18,6 +18,18 @@ namespace rsx::metal
 		mesh,
 	};
 
+	enum class pipeline_entry_requirement : u32
+	{
+		argument_table_shader_binding = 1u << 0,
+		vertex_input_fetch = 1u << 1,
+		viewport_depth_transform = 1u << 2,
+		stage_input_layout = 1u << 3,
+		mrt_output_mapping = 1u << 4,
+		depth_export_mapping = 1u << 5,
+		mesh_object_mapping = 1u << 6,
+		mesh_grid_mapping = 1u << 7,
+	};
+
 	struct translated_shader
 	{
 		shader_stage stage = shader_stage::vertex;
@@ -31,6 +43,7 @@ namespace rsx::metal
 		std::string pipeline_source;
 		std::string pipeline_cache_path;
 		std::string pipeline_entry_error;
+		u32 pipeline_requirement_mask = 0;
 		b8 pipeline_entry_available = false;
 	};
 

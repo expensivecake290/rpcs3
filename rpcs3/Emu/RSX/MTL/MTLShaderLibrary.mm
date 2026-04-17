@@ -5,9 +5,12 @@
 #include "MTLShaderCompiler.h"
 
 #include "Utilities/File.h"
+#include "util/fnv_hash.hpp"
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+
+#include <string_view>
 
 namespace
 {
@@ -50,6 +53,19 @@ namespace
 			static_cast<u32>(shader.stage), shader.id, shader.source_hash);
 
 		return cache.library_path() + fmt::format("%llX.%s.metallib", shader.source_hash, stage_suffix(shader.stage));
+	}
+
+	u64 shader_source_text_hash(std::string_view source)
+	{
+		rsx_log.trace("shader_source_text_hash(size=0x%x)", source.size());
+
+		usz hash = rpcs3::fnv_seed;
+		for (const char c : source)
+		{
+			hash = rpcs3::hash64(hash, static_cast<u8>(c));
+		}
+
+		return static_cast<u64>(hash);
 	}
 }
 
@@ -107,6 +123,8 @@ namespace rsx::metal
 			fmt::throw_exception("Metal dynamic library compilation requires a shader entry point name");
 		}
 
+		const char* stage = stage_suffix(shader.stage);
+		const u64 source_text_hash = shader_source_text_hash(shader.source);
 		const std::string library_path = dynamic_library_path(m_impl->m_cache, shader);
 		NSString* key = make_ns_string(library_path);
 
@@ -117,6 +135,7 @@ namespace rsx::metal
 				.stage = shader.stage,
 				.id = shader.id,
 				.source_hash = shader.source_hash,
+				.source_text_hash = source_text_hash,
 				.entry_point = shader.entry_point,
 				.dynamic_library_path = library_path,
 				.dynamic_library_handle = (__bridge void*)cached_library,
@@ -131,29 +150,38 @@ namespace rsx::metal
 
 			if (fs::stat_t library_stat{}; fs::get_stat(library_path, library_stat) && !library_stat.is_directory && library_stat.size)
 			{
-				NSError* load_error = nil;
-				dynamic_library = [compiler newDynamicLibraryWithURL:make_file_url(library_path) error:&load_error];
-				if (!dynamic_library)
+				shader_library_metadata metadata;
+				if (m_impl->m_cache.find_shader_library_metadata(stage, shader.source_hash, source_text_hash, shader.entry_point, library_path, metadata))
 				{
-					const std::string error = load_error ? get_ns_string([load_error localizedDescription]) : "unknown error";
-					rsx_log.warning("Metal dynamic library cache miss for '%s': %s", library_path, error);
+					NSError* load_error = nil;
+					dynamic_library = [compiler newDynamicLibraryWithURL:make_file_url(library_path) error:&load_error];
+					if (!dynamic_library)
+					{
+						const std::string error = load_error ? get_ns_string([load_error localizedDescription]) : "unknown error";
+						rsx_log.warning("Metal dynamic library cache miss for '%s': %s", library_path, error);
+					}
+					else
+					{
+						[m_impl->m_dynamic_libraries setObject:dynamic_library forKey:key];
+						[m_impl->m_disk_loaded_libraries addObject:key];
+						m_impl->m_loaded_libraries++;
+
+						return
+						{
+							.stage = shader.stage,
+							.id = shader.id,
+							.source_hash = shader.source_hash,
+							.source_text_hash = source_text_hash,
+							.entry_point = shader.entry_point,
+							.dynamic_library_path = library_path,
+							.dynamic_library_handle = (__bridge void*)dynamic_library,
+							.loaded_from_disk = true,
+						};
+					}
 				}
 				else
 				{
-					[m_impl->m_dynamic_libraries setObject:dynamic_library forKey:key];
-					[m_impl->m_disk_loaded_libraries addObject:key];
-					m_impl->m_loaded_libraries++;
-
-					return
-					{
-						.stage = shader.stage,
-						.id = shader.id,
-						.source_hash = shader.source_hash,
-						.entry_point = shader.entry_point,
-						.dynamic_library_path = library_path,
-						.dynamic_library_handle = (__bridge void*)dynamic_library,
-						.loaded_from_disk = true,
-					};
+					rsx_log.warning("Metal dynamic library cache metadata miss for '%s'", library_path);
 				}
 			}
 
@@ -194,6 +222,8 @@ namespace rsx::metal
 				fmt::throw_exception("Metal dynamic library serialization failed for '%s': %s", library_path, error);
 			}
 
+			m_impl->m_cache.store_shader_library_metadata(stage, shader.id, shader.source_hash, source_text_hash, shader.entry_point, library_path);
+
 			[m_impl->m_dynamic_libraries setObject:dynamic_library forKey:key];
 			m_impl->m_compiled_libraries++;
 
@@ -202,6 +232,7 @@ namespace rsx::metal
 				.stage = shader.stage,
 				.id = shader.id,
 				.source_hash = shader.source_hash,
+				.source_text_hash = source_text_hash,
 				.entry_point = shader.entry_point,
 				.dynamic_library_path = library_path,
 				.dynamic_library_handle = (__bridge void*)dynamic_library,

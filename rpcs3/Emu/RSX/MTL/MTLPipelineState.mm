@@ -50,6 +50,16 @@ namespace
 
 	void validate_shader_source(const char* stage, const rsx::metal::render_pipeline_shader& shader)
 	{
+		if (!shader.entry_available)
+		{
+			if (!shader.entry_error.empty())
+			{
+				fmt::throw_exception("Metal %s pipeline shader is gated: %s", stage, shader.entry_error.c_str());
+			}
+
+			fmt::throw_exception("Metal %s pipeline shader was not validated as a real pipeline entry", stage);
+		}
+
 		if (!shader.source_hash)
 		{
 			fmt::throw_exception("Metal %s pipeline shader requires a non-zero source hash", stage);
@@ -68,7 +78,7 @@ namespace
 
 	b8 has_shader_source(const rsx::metal::render_pipeline_shader& shader)
 	{
-		return shader.source_hash || !shader.source.empty() || !shader.entry_point.empty();
+		return shader.source_hash || !shader.source.empty() || !shader.entry_point.empty() || !shader.entry_error.empty() || shader.entry_available;
 	}
 
 	MTLSize make_mtl_size(const rsx::metal::mesh_threadgroup_size& size)
@@ -147,6 +157,55 @@ namespace
 
 namespace rsx::metal
 {
+	render_pipeline_shader make_render_pipeline_shader(const translated_shader& shader)
+	{
+		rsx_log.trace("rsx::metal::make_render_pipeline_shader(stage=%u, id=%u, source_hash=0x%llx, pipeline_source_hash=0x%llx)",
+			static_cast<u32>(shader.stage), shader.id, shader.source_hash, shader.pipeline_source_hash);
+
+		return
+		{
+			.source_hash = shader.pipeline_source_hash,
+			.source = shader.pipeline_source,
+			.entry_point = shader.pipeline_entry_point,
+			.entry_error = shader.pipeline_entry_error,
+			.requirement_mask = shader.pipeline_requirement_mask,
+			.entry_available = shader.pipeline_entry_available,
+		};
+	}
+
+	render_pipeline_shader make_render_pipeline_shader(const pipeline_entry_metadata& metadata)
+	{
+		rsx_log.trace("rsx::metal::make_render_pipeline_shader(stage=%s, source_hash=0x%llx, pipeline_source_hash=0x%llx, entry_available=%u)",
+			metadata.stage.c_str(), metadata.source_hash, metadata.pipeline_source_hash, static_cast<u32>(metadata.entry_available));
+
+		std::string source;
+
+		if (metadata.entry_available)
+		{
+			fs::file file{metadata.source_path, fs::read};
+			if (!file)
+			{
+				fmt::throw_exception("Metal pipeline entry source '%s' is not readable", metadata.source_path);
+			}
+
+			source = file.to_string();
+			if (source.empty())
+			{
+				fmt::throw_exception("Metal pipeline entry source '%s' is empty", metadata.source_path);
+			}
+		}
+
+		return
+		{
+			.source_hash = metadata.pipeline_source_hash,
+			.source = std::move(source),
+			.entry_point = metadata.entry_point,
+			.entry_error = metadata.entry_error,
+			.requirement_mask = metadata.requirement_mask,
+			.entry_available = metadata.entry_available,
+		};
+	}
+
 	struct render_pipeline_cache::render_pipeline_cache_impl
 	{
 		shader_compiler& m_compiler;

@@ -13,13 +13,20 @@ namespace rsx::metal
 	class pipeline_cache;
 	class persistent_shader_cache;
 	class shader_compiler;
+	struct pipeline_entry_metadata;
 
 	struct render_pipeline_shader
 	{
 		u64 source_hash = 0;
 		std::string source;
 		std::string entry_point;
+		std::string entry_error;
+		u32 requirement_mask = 0;
+		b8 entry_available = false;
 	};
+
+	render_pipeline_shader make_render_pipeline_shader(const translated_shader& shader);
+	render_pipeline_shader make_render_pipeline_shader(const pipeline_entry_metadata& metadata);
 
 	struct render_pipeline_desc
 	{

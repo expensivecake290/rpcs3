@@ -16,6 +16,7 @@ namespace rsx::metal
 		texture& operator=(const texture&) = delete;
 
 		void* handle() const;
+		u64 resource_id() const;
 		u32 width() const;
 		u32 height() const;
 

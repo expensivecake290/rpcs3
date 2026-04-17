@@ -73,22 +73,28 @@ namespace rsx::metal
 				fmt::throw_exception("Metal shader compiler creation failed: %s", error);
 			}
 
+			pipeline_archive_metadata archive_metadata;
 			m_impl->m_archive_path = cache.pipeline_archive_file_path();
-			if (fs::stat_t archive_stat{}; fs::get_stat(m_impl->m_archive_path, archive_stat) && !archive_stat.is_directory && archive_stat.size)
+			if (cache.find_pipeline_archive_metadata(archive_metadata))
 			{
 				NSError* archive_error = nil;
-				m_impl->m_archive = [device newArchiveWithURL:make_file_url(m_impl->m_archive_path) error:&archive_error];
+				m_impl->m_archive = [device newArchiveWithURL:make_file_url(archive_metadata.archive_path) error:&archive_error];
 
 				if (!m_impl->m_archive)
 				{
 					const std::string error = archive_error ? get_ns_string([archive_error localizedDescription]) : "unknown error";
-					rsx_log.warning("Metal pipeline archive load failed for '%s': %s", m_impl->m_archive_path, error);
+					rsx_log.warning("Metal pipeline archive load failed for '%s': %s", archive_metadata.archive_path, error);
 				}
 				else
 				{
 					m_impl->m_archive.label = @"RPCS3 Metal pipeline archive";
 					m_impl->m_archive_loaded = true;
+					m_impl->m_archive_path = archive_metadata.archive_path;
 				}
+			}
+			else if (fs::is_file(m_impl->m_archive_path))
+			{
+				rsx_log.warning("Metal pipeline archive exists without valid metadata and will not be used: %s", m_impl->m_archive_path);
 			}
 
 			m_impl->m_task_options = [MTL4CompilerTaskOptions new];
