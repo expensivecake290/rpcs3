@@ -57,10 +57,18 @@ namespace rsx::metal
 		u32 render_pipeline_cache_hit_count = 0;
 		u32 retained_render_pipeline_count = 0;
 		u32 render_pipeline_compile_failure_count = 0;
+		u32 render_pipeline_metadata_hit_count = 0;
+		u32 render_pipeline_metadata_miss_count = 0;
+		u32 render_pipeline_metadata_mismatch_count = 0;
+		u32 render_pipeline_metadata_invalid_count = 0;
 		u32 compiled_mesh_pipeline_count = 0;
 		u32 mesh_pipeline_cache_hit_count = 0;
 		u32 retained_mesh_pipeline_count = 0;
 		u32 mesh_pipeline_compile_failure_count = 0;
+		u32 mesh_pipeline_metadata_hit_count = 0;
+		u32 mesh_pipeline_metadata_miss_count = 0;
+		u32 mesh_pipeline_metadata_mismatch_count = 0;
+		u32 mesh_pipeline_metadata_invalid_count = 0;
 	};
 
 	struct mesh_threadgroup_size

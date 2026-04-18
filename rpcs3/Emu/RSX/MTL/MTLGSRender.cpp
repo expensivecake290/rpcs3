@@ -151,15 +151,21 @@ void MTLGSRender::report_backend_state() const
 		caps.frames_in_flight,
 		m_device->residency_allocation_count(),
 		m_device->residency_allocated_size());
-	rsx_log.notice("Metal backend cache state: source_metadata=%u, pipeline_entries=%u, dynamic_libraries=%u, pipeline_archives=%u",
+	rsx_log.notice("Metal backend cache state: source_metadata=%u, pipeline_entries=%u, pipeline_states=%u, dynamic_libraries=%u, pipeline_archives=%u",
 		cache_stats.shader_entries,
 		cache_stats.pipeline_entries,
+		cache_stats.pipeline_state_entries,
 		cache_stats.library_entries,
 		cache_stats.archive_entries);
-	rsx_log.notice("Metal backend compiler/archive state: compiler_ready=%u, serializer_ready=%u, archive_metadata=%u, archive_loaded=%u, archive_load_failed=%u, archive_without_metadata=%u",
+	rsx_log.notice("Metal backend pipeline entry cache: available=%u, gated=%u, mesh=%u",
+		cache_stats.pipeline_entry_available_entries,
+		cache_stats.pipeline_entry_gated_entries,
+		cache_stats.mesh_pipeline_entry_entries);
+	rsx_log.notice("Metal backend compiler/archive state: compiler_ready=%u, serializer_ready=%u, archive_metadata=%u, archive_metadata_invalid=%u, archive_loaded=%u, archive_load_failed=%u, archive_without_metadata=%u",
 		static_cast<u32>(compiler_stats.compiler_ready),
 		static_cast<u32>(compiler_stats.pipeline_serializer_ready),
 		static_cast<u32>(compiler_stats.archive_metadata_found),
+		static_cast<u32>(compiler_stats.archive_metadata_invalid),
 		static_cast<u32>(compiler_stats.archive_loaded),
 		static_cast<u32>(compiler_stats.archive_load_failed),
 		static_cast<u32>(compiler_stats.archive_without_metadata));
@@ -169,9 +175,11 @@ void MTLGSRender::report_backend_state() const
 		library_stats.disk_file_misses,
 		library_stats.compiled_libraries,
 		library_stats.retained_libraries);
-	rsx_log.notice("Metal backend pipeline cache workflow: pending=%u, flushed=%u, successful_flushes=%u, skipped_flushes=%u, serializer_failures=%u, archive_failures=%u",
+	rsx_log.notice("Metal backend pipeline cache workflow: pending=%u, flushed=%u, archived=%u, archive_metadata_invalid=%u, successful_flushes=%u, skipped_flushes=%u, serializer_failures=%u, archive_failures=%u",
 		pipeline_stats.pending_pipeline_count,
 		pipeline_stats.flushed_pipeline_count,
+		pipeline_stats.archived_pipeline_count,
+		static_cast<u32>(pipeline_stats.archive_metadata_invalid),
 		pipeline_stats.successful_flush_count,
 		pipeline_stats.skipped_flush_count,
 		pipeline_stats.serializer_missing_failures,
@@ -183,6 +191,16 @@ void MTLGSRender::report_backend_state() const
 		render_pipeline_stats.compiled_mesh_pipeline_count,
 		render_pipeline_stats.mesh_pipeline_cache_hit_count,
 		render_pipeline_stats.retained_mesh_pipeline_count);
+	rsx_log.notice("Metal backend render pipeline metadata: hits=%u, misses=%u, mismatches=%u, invalid=%u",
+		render_pipeline_stats.render_pipeline_metadata_hit_count,
+		render_pipeline_stats.render_pipeline_metadata_miss_count,
+		render_pipeline_stats.render_pipeline_metadata_mismatch_count,
+		render_pipeline_stats.render_pipeline_metadata_invalid_count);
+	rsx_log.notice("Metal backend mesh pipeline metadata: hits=%u, misses=%u, mismatches=%u, invalid=%u",
+		render_pipeline_stats.mesh_pipeline_metadata_hit_count,
+		render_pipeline_stats.mesh_pipeline_metadata_miss_count,
+		render_pipeline_stats.mesh_pipeline_metadata_mismatch_count,
+		render_pipeline_stats.mesh_pipeline_metadata_invalid_count);
 	rsx_log.notice("Metal backend render pipeline compile failures: render=%u, mesh=%u",
 		render_pipeline_stats.render_pipeline_compile_failure_count,
 		render_pipeline_stats.mesh_pipeline_compile_failure_count);

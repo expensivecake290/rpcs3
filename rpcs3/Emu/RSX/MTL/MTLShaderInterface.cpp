@@ -430,9 +430,39 @@ namespace rsx::metal
 		fmt::throw_exception("Unknown Metal shader stage %u", static_cast<u32>(layout.stage));
 	}
 
+	u32 known_pipeline_entry_requirement_mask()
+	{
+		rsx_log.trace("rsx::metal::known_pipeline_entry_requirement_mask()");
+
+		return
+			pipeline_requirement(pipeline_entry_requirement::argument_table_shader_binding) |
+			pipeline_requirement(pipeline_entry_requirement::vertex_input_fetch) |
+			pipeline_requirement(pipeline_entry_requirement::viewport_depth_transform) |
+			pipeline_requirement(pipeline_entry_requirement::stage_input_layout) |
+			pipeline_requirement(pipeline_entry_requirement::mrt_output_mapping) |
+			pipeline_requirement(pipeline_entry_requirement::depth_export_mapping) |
+			pipeline_requirement(pipeline_entry_requirement::mesh_object_mapping) |
+			pipeline_requirement(pipeline_entry_requirement::mesh_grid_mapping);
+	}
+
+	void validate_pipeline_entry_requirement_mask(u32 requirement_mask)
+	{
+		rsx_log.trace("rsx::metal::validate_pipeline_entry_requirement_mask(requirement_mask=0x%x)", requirement_mask);
+
+		const u32 unknown_mask = requirement_mask & ~known_pipeline_entry_requirement_mask();
+		if (unknown_mask)
+		{
+			fmt::throw_exception("Metal pipeline entry requirement mask contains unknown bits: requirement_mask=0x%x, unknown=0x%x",
+				requirement_mask,
+				unknown_mask);
+		}
+	}
+
 	std::string describe_pipeline_entry_requirements(u32 requirement_mask)
 	{
 		rsx_log.trace("rsx::metal::describe_pipeline_entry_requirements(requirement_mask=0x%x)", requirement_mask);
+
+		validate_pipeline_entry_requirement_mask(requirement_mask);
 
 		if (!requirement_mask)
 		{
@@ -479,21 +509,6 @@ namespace rsx::metal
 		if (requirement_mask & pipeline_requirement(pipeline_entry_requirement::mesh_grid_mapping))
 		{
 			append_requirement(text, "mesh grid layout");
-		}
-
-		constexpr u32 known_mask =
-			pipeline_requirement(pipeline_entry_requirement::argument_table_shader_binding) |
-			pipeline_requirement(pipeline_entry_requirement::vertex_input_fetch) |
-			pipeline_requirement(pipeline_entry_requirement::viewport_depth_transform) |
-			pipeline_requirement(pipeline_entry_requirement::stage_input_layout) |
-			pipeline_requirement(pipeline_entry_requirement::mrt_output_mapping) |
-			pipeline_requirement(pipeline_entry_requirement::depth_export_mapping) |
-			pipeline_requirement(pipeline_entry_requirement::mesh_object_mapping) |
-			pipeline_requirement(pipeline_entry_requirement::mesh_grid_mapping);
-
-		if (requirement_mask & ~known_mask)
-		{
-			append_requirement(text, fmt::format("unknown=0x%x", requirement_mask & ~known_mask));
 		}
 
 		return text;

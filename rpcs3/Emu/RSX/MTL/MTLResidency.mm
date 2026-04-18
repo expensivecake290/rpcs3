@@ -4,6 +4,7 @@
 #import <Metal/Metal.h>
 
 #include <mutex>
+#include <unordered_map>
 
 namespace
 {
@@ -29,6 +30,7 @@ namespace rsx::metal
 	struct residency_manager::residency_manager_impl
 	{
 		id<MTLResidencySet> m_residency_set = nil;
+		std::unordered_map<void*, u32> m_allocations;
 		std::mutex m_mutex;
 		b8 m_resident = false;
 	};
@@ -69,6 +71,12 @@ namespace rsx::metal
 	residency_manager::~residency_manager()
 	{
 		rsx_log.notice("rsx::metal::residency_manager::~residency_manager()");
+
+		if (allocation_count())
+		{
+			rsx_log.error("Metal residency manager destroyed with %u tracked allocations still resident", allocation_count());
+		}
+
 		end_residency();
 	}
 
@@ -121,8 +129,19 @@ namespace rsx::metal
 		if (@available(macOS 26.0, *))
 		{
 			std::lock_guard lock(m_impl->m_mutex);
+
+			auto found = m_impl->m_allocations.find(allocation_handle);
+			if (found != m_impl->m_allocations.end())
+			{
+				found->second++;
+				rsx_log.trace("Metal residency allocation already tracked: allocation=*0x%x, ref_count=%u",
+					allocation_handle, found->second);
+				return;
+			}
+
 			id<MTLAllocation> allocation = (__bridge id<MTLAllocation>)allocation_handle;
 			[m_impl->m_residency_set addAllocation:allocation];
+			m_impl->m_allocations.emplace(allocation_handle, 1);
 		}
 		else
 		{
@@ -142,8 +161,25 @@ namespace rsx::metal
 		if (@available(macOS 26.0, *))
 		{
 			std::lock_guard lock(m_impl->m_mutex);
+
+			auto found = m_impl->m_allocations.find(allocation_handle);
+			if (found == m_impl->m_allocations.end())
+			{
+				fmt::throw_exception("Metal residency remove received an unknown allocation");
+			}
+
+			ensure(found->second > 0);
+			if (found->second > 1)
+			{
+				found->second--;
+				rsx_log.trace("Metal residency allocation reference released: allocation=*0x%x, ref_count=%u",
+					allocation_handle, found->second);
+				return;
+			}
+
 			id<MTLAllocation> allocation = (__bridge id<MTLAllocation>)allocation_handle;
 			[m_impl->m_residency_set removeAllocation:allocation];
+			m_impl->m_allocations.erase(found);
 		}
 		else
 		{
@@ -192,7 +228,15 @@ namespace rsx::metal
 		if (@available(macOS 26.0, *))
 		{
 			std::lock_guard lock(m_impl->m_mutex);
-			return static_cast<u32>(m_impl->m_residency_set.allocationCount);
+			const u32 tracked_allocation_count = static_cast<u32>(m_impl->m_allocations.size());
+			const u32 residency_set_allocation_count = static_cast<u32>(m_impl->m_residency_set.allocationCount);
+			if (tracked_allocation_count != residency_set_allocation_count)
+			{
+				rsx_log.warning("Metal residency allocation count mismatch: tracked=%u, residency_set=%u",
+					tracked_allocation_count, residency_set_allocation_count);
+			}
+
+			return tracked_allocation_count;
 		}
 
 		fmt::throw_exception("Metal residency allocation count query requires macOS 26.0 or newer");

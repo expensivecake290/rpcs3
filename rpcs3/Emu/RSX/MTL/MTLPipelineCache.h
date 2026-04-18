@@ -19,8 +19,14 @@ namespace rsx::metal
 		u32 serializer_missing_failures = 0;
 		u32 script_serialization_failures = 0;
 		u32 archive_serialization_failures = 0;
+		u32 archived_pipeline_count = 0;
+		u64 archive_script_size = 0;
+		u64 archive_size = 0;
+		b8 archive_metadata_found = false;
+		b8 archive_metadata_invalid = false;
 		std::string script_path;
 		std::string archive_path;
+		std::string archive_metadata_error;
 	};
 
 	class pipeline_cache

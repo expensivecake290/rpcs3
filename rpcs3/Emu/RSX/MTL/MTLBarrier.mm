@@ -42,12 +42,14 @@ namespace rsx::metal
 
 	void encode_consumer_barrier(void* encoder_handle, const resource_barrier& barrier)
 	{
-		rsx_log.trace("rsx::metal::encode_consumer_barrier(encoder_handle=*0x%x, resource_id=0x%x, required=%d, after=%s, before=%s, scope=%s)",
+		rsx_log.trace("rsx::metal::encode_consumer_barrier(encoder_handle=*0x%x, resource_id=0x%x, required=%d, after=%s/%s, before=%s/%s, scope=%s)",
 			encoder_handle,
 			barrier.resource_id,
 			barrier.required,
 			describe_resource_stage(barrier.after_stage),
+			describe_resource_access(barrier.after_access),
 			describe_resource_stage(barrier.before_stage),
+			describe_resource_access(barrier.before_access),
 			describe_resource_barrier_scope(barrier.scope));
 
 		if (!barrier.required)

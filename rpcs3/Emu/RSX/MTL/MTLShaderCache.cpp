@@ -267,6 +267,24 @@ namespace
 		return stage == "vp" || stage == "fp" || stage == "mesh";
 	}
 
+	b8 is_shader_completion_stage(std::string_view stage)
+	{
+		rsx_log.trace("is_shader_completion_stage(stage=%s)", stage);
+		return stage == "vp" || stage == "fp" || stage == "mesh";
+	}
+
+	b8 is_shader_translation_failure_stage(std::string_view stage)
+	{
+		rsx_log.trace("is_shader_translation_failure_stage(stage=%s)", stage);
+		return stage == "vp" || stage == "fp" || stage == "mesh";
+	}
+
+	b8 is_pipeline_state_type(std::string_view pipeline_type)
+	{
+		rsx_log.trace("is_pipeline_state_type(pipeline_type=%s)", pipeline_type);
+		return pipeline_type == "render" || pipeline_type == "mesh";
+	}
+
 	u64 source_text_hash(std::string_view source)
 	{
 		rsx_log.trace("source_text_hash(size=0x%x)", source.size());
@@ -441,6 +459,11 @@ namespace
 			return false;
 		}
 
+		if (requirement_mask & ~rsx::metal::known_pipeline_entry_requirement_mask())
+		{
+			return false;
+		}
+
 		if (record_version >= 3)
 		{
 			std::string requirement_description;
@@ -506,10 +529,11 @@ namespace
 		}
 
 		u32 metadata_u32 = 0;
-		if (!try_get_metadata_field(view, "record_version", field) || !try_parse_metadata_u32(field, metadata_u32) || metadata_u32 != 1)
+		if (!try_get_metadata_field(view, "record_version", field) || !try_parse_metadata_u32(field, metadata_u32) || (metadata_u32 != 1 && metadata_u32 != 2))
 		{
 			return false;
 		}
+		const u32 record_version = metadata_u32;
 
 		if (!try_get_metadata_field(view, "stage", field) || !is_shader_library_stage(field))
 		{
@@ -544,7 +568,234 @@ namespace
 			return false;
 		}
 
+		if (record_version >= 2)
+		{
+			b8 entry_available = false;
+			if (!try_get_metadata_field(view, "pipeline_entry_available", field) || !try_parse_metadata_b8(field, entry_available))
+			{
+				return false;
+			}
+
+			u32 requirement_mask = 0;
+			if (!try_get_metadata_field(view, "pipeline_requirement_mask", field) || !try_parse_metadata_u32(field, requirement_mask))
+			{
+				return false;
+			}
+
+			if (requirement_mask & ~rsx::metal::known_pipeline_entry_requirement_mask())
+			{
+				return false;
+			}
+
+			std::string requirement_description;
+			if (!try_get_metadata_field(view, "pipeline_requirement_description", requirement_description) ||
+				requirement_description != rsx::metal::describe_pipeline_entry_requirements(requirement_mask))
+			{
+				return false;
+			}
+
+			if (entry_available ? !!requirement_mask : !requirement_mask)
+			{
+				return false;
+			}
+		}
+
 		return fs::is_file(library_path);
+	}
+
+	b8 is_valid_shader_completion_metadata(const std::string& path, const std::string& cache_version)
+	{
+		rsx_log.trace("is_valid_shader_completion_metadata(path=%s, cache_version=%s)", path, cache_version);
+
+		fs::file file{path, fs::read};
+		if (!file)
+		{
+			return false;
+		}
+
+		std::string text = file.to_string();
+		std::string_view view = text;
+		if (take_metadata_line(view) != "RPCS3 Metal shader completion")
+		{
+			return false;
+		}
+
+		std::string field;
+		if (!try_get_metadata_field(view, "backend", field) || field != "metal")
+		{
+			return false;
+		}
+
+		if (!try_get_metadata_field(view, "cache_version", field) || field != cache_version)
+		{
+			return false;
+		}
+
+		u32 metadata_u32 = 0;
+		if (!try_get_metadata_field(view, "record_version", field) || !try_parse_metadata_u32(field, metadata_u32) || metadata_u32 != 1)
+		{
+			return false;
+		}
+
+		if (!try_get_metadata_field(view, "stage", field) || !is_shader_completion_stage(field))
+		{
+			return false;
+		}
+
+		if (!try_get_metadata_field(view, "shader_id", field) || !try_parse_metadata_u32(field, metadata_u32))
+		{
+			return false;
+		}
+
+		u64 source_hash = 0;
+		if (!try_get_metadata_field(view, "source_hash", field) || !try_parse_metadata_u64(field, source_hash) || !source_hash)
+		{
+			return false;
+		}
+
+		u64 source_text_hash = 0;
+		if (!try_get_metadata_field(view, "source_text_hash", field) || !try_parse_metadata_u64(field, source_text_hash) || !source_text_hash)
+		{
+			return false;
+		}
+
+		std::string entry_point;
+		if (!try_get_metadata_field(view, "entry_point", entry_point) || entry_point.empty())
+		{
+			return false;
+		}
+
+		std::string source_path;
+		if (!try_get_metadata_field(view, "source_path", source_path) || source_path.empty())
+		{
+			return false;
+		}
+
+		u64 actual_source_text_hash = 0;
+		if (!get_file_text_hash(source_path, actual_source_text_hash) || actual_source_text_hash != source_text_hash)
+		{
+			return false;
+		}
+
+		u64 pipeline_source_hash = 0;
+		if (!try_get_metadata_field(view, "pipeline_source_hash", field) || !try_parse_metadata_u64(field, pipeline_source_hash))
+		{
+			return false;
+		}
+
+		b8 pipeline_entry_available = false;
+		if (!try_get_metadata_field(view, "pipeline_entry_available", field) || !try_parse_metadata_b8(field, pipeline_entry_available))
+		{
+			return false;
+		}
+
+		u32 pipeline_requirement_mask = 0;
+		if (!try_get_metadata_field(view, "pipeline_requirement_mask", field) || !try_parse_metadata_u32(field, pipeline_requirement_mask))
+		{
+			return false;
+		}
+
+		if (pipeline_requirement_mask & ~rsx::metal::known_pipeline_entry_requirement_mask())
+		{
+			return false;
+		}
+
+		std::string requirement_description;
+		if (!try_get_metadata_field(view, "pipeline_requirement_description", requirement_description) ||
+			requirement_description != rsx::metal::describe_pipeline_entry_requirements(pipeline_requirement_mask))
+		{
+			return false;
+		}
+
+		std::string pipeline_entry_point;
+		if (!try_get_metadata_field(view, "pipeline_entry_point", pipeline_entry_point))
+		{
+			return false;
+		}
+
+		std::string pipeline_source_path;
+		if (!try_get_metadata_field(view, "pipeline_source_path", pipeline_source_path))
+		{
+			return false;
+		}
+
+		std::string pipeline_entry_error;
+		if (!try_get_metadata_field(view, "pipeline_entry_error", pipeline_entry_error))
+		{
+			return false;
+		}
+
+		if (pipeline_entry_available)
+		{
+			u64 actual_pipeline_source_hash = 0;
+			return pipeline_source_hash &&
+				!pipeline_requirement_mask &&
+				!pipeline_entry_point.empty() &&
+				!pipeline_source_path.empty() &&
+				pipeline_entry_error.empty() &&
+				get_file_text_hash(pipeline_source_path, actual_pipeline_source_hash) &&
+				actual_pipeline_source_hash == pipeline_source_hash;
+		}
+
+		return !pipeline_source_hash &&
+			pipeline_entry_point.empty() &&
+			pipeline_source_path.empty() &&
+			pipeline_requirement_mask &&
+			!pipeline_entry_error.empty();
+	}
+
+	b8 is_valid_shader_translation_failure_metadata(const std::string& path, const std::string& cache_version)
+	{
+		rsx_log.trace("is_valid_shader_translation_failure_metadata(path=%s, cache_version=%s)", path, cache_version);
+
+		fs::file file{path, fs::read};
+		if (!file)
+		{
+			return false;
+		}
+
+		std::string text = file.to_string();
+		std::string_view view = text;
+		if (take_metadata_line(view) != "RPCS3 Metal shader translation failure")
+		{
+			return false;
+		}
+
+		std::string field;
+		if (!try_get_metadata_field(view, "backend", field) || field != "metal")
+		{
+			return false;
+		}
+
+		if (!try_get_metadata_field(view, "cache_version", field) || field != cache_version)
+		{
+			return false;
+		}
+
+		u32 metadata_u32 = 0;
+		if (!try_get_metadata_field(view, "record_version", field) || !try_parse_metadata_u32(field, metadata_u32) || metadata_u32 != 1)
+		{
+			return false;
+		}
+
+		if (!try_get_metadata_field(view, "stage", field) || !is_shader_translation_failure_stage(field))
+		{
+			return false;
+		}
+
+		if (!try_get_metadata_field(view, "shader_id", field) || !try_parse_metadata_u32(field, metadata_u32))
+		{
+			return false;
+		}
+
+		u64 metadata_u64 = 0;
+		if (!try_get_metadata_field(view, "source_hash", field) || !try_parse_metadata_u64(field, metadata_u64) || !metadata_u64)
+		{
+			return false;
+		}
+
+		std::string failure_reason;
+		return try_get_metadata_field(view, "failure_reason", failure_reason) && !failure_reason.empty();
 	}
 
 	b8 get_file_size(const std::string& path, u64& size)
@@ -631,6 +882,124 @@ namespace
 			actual_script_size == script_size &&
 			actual_archive_size == archive_size;
 	}
+
+	b8 is_valid_pipeline_state_metadata(const std::string& path, const std::string& cache_version)
+	{
+		rsx_log.trace("is_valid_pipeline_state_metadata(path=%s, cache_version=%s)", path, cache_version);
+
+		fs::file file{path, fs::read};
+		if (!file)
+		{
+			return false;
+		}
+
+		std::string text = file.to_string();
+		std::string_view view = text;
+		if (take_metadata_line(view) != "RPCS3 Metal pipeline state")
+		{
+			return false;
+		}
+
+		std::string field;
+		if (!try_get_metadata_field(view, "backend", field) || field != "metal")
+		{
+			return false;
+		}
+
+		if (!try_get_metadata_field(view, "cache_version", field) || field != cache_version)
+		{
+			return false;
+		}
+
+		u32 metadata_u32 = 0;
+		if (!try_get_metadata_field(view, "record_version", field) || !try_parse_metadata_u32(field, metadata_u32) || metadata_u32 != 1)
+		{
+			return false;
+		}
+
+		std::string pipeline_type;
+		if (!try_get_metadata_field(view, "pipeline_type", pipeline_type) || !is_pipeline_state_type(pipeline_type))
+		{
+			return false;
+		}
+
+		u64 pipeline_hash = 0;
+		if (!try_get_metadata_field(view, "pipeline_hash", field) || !try_parse_metadata_u64(field, pipeline_hash) || !pipeline_hash)
+		{
+			return false;
+		}
+
+		u64 vertex_source_hash = 0;
+		if (!try_get_metadata_field(view, "vertex_source_hash", field) || !try_parse_metadata_u64(field, vertex_source_hash))
+		{
+			return false;
+		}
+
+		u64 fragment_source_hash = 0;
+		if (!try_get_metadata_field(view, "fragment_source_hash", field) || !try_parse_metadata_u64(field, fragment_source_hash))
+		{
+			return false;
+		}
+
+		u64 object_source_hash = 0;
+		if (!try_get_metadata_field(view, "object_source_hash", field) || !try_parse_metadata_u64(field, object_source_hash))
+		{
+			return false;
+		}
+
+		u64 mesh_source_hash = 0;
+		if (!try_get_metadata_field(view, "mesh_source_hash", field) || !try_parse_metadata_u64(field, mesh_source_hash))
+		{
+			return false;
+		}
+
+		u64 linked_library_hash = 0;
+		if (!try_get_metadata_field(view, "linked_library_hash", field) || !try_parse_metadata_u64(field, linked_library_hash))
+		{
+			return false;
+		}
+
+		u32 linked_library_count = 0;
+		if (!try_get_metadata_field(view, "linked_library_count", field) || !try_parse_metadata_u32(field, linked_library_count))
+		{
+			return false;
+		}
+
+		u32 color_pixel_format = 0;
+		if (!try_get_metadata_field(view, "color_pixel_format", field) || !try_parse_metadata_u32(field, color_pixel_format) || !color_pixel_format)
+		{
+			return false;
+		}
+
+		u32 raster_sample_count = 0;
+		if (!try_get_metadata_field(view, "raster_sample_count", field) || !try_parse_metadata_u32(field, raster_sample_count) || !raster_sample_count)
+		{
+			return false;
+		}
+
+		b8 rasterization_enabled = false;
+		if (!try_get_metadata_field(view, "rasterization_enabled", field) || !try_parse_metadata_b8(field, rasterization_enabled))
+		{
+			return false;
+		}
+
+		if ((linked_library_count && !linked_library_hash) || (!linked_library_count && linked_library_hash))
+		{
+			return false;
+		}
+
+		if (pipeline_type == "render")
+		{
+			return vertex_source_hash &&
+				!object_source_hash &&
+				!mesh_source_hash &&
+				(rasterization_enabled ? !!fragment_source_hash : !fragment_source_hash);
+		}
+
+		return !vertex_source_hash &&
+			mesh_source_hash &&
+			(rasterization_enabled ? !!fragment_source_hash : !fragment_source_hash);
+	}
 }
 
 namespace rsx::metal
@@ -665,6 +1034,7 @@ namespace rsx::metal
 		m_raw_shader_path = m_root_path + "raw/";
 		m_msl_path = m_root_path + "msl/";
 		m_library_path = m_root_path + "libraries/";
+		m_completion_path = m_root_path + "completed/";
 		m_pipeline_path = m_root_path + "pipelines/";
 		m_archive_path = m_root_path + "archives/";
 		m_pipeline_script_path = m_root_path + "pipeline_scripts/";
@@ -676,6 +1046,7 @@ namespace rsx::metal
 		create_directory(m_raw_shader_path);
 		create_directory(m_msl_path);
 		create_directory(m_library_path);
+		create_directory(m_completion_path);
 		create_directory(m_pipeline_path);
 		create_directory(m_archive_path);
 		create_directory(m_pipeline_script_path);
@@ -687,11 +1058,23 @@ namespace rsx::metal
 	{
 		rsx_log.notice("rsx::metal::persistent_shader_cache::report()");
 		rsx_log.notice("Metal shader cache root: %s", m_root_path);
-		rsx_log.notice("Metal shader cache entries: shaders=%u, libraries=%u, pipelines=%u, archives=%u",
+		rsx_log.notice("Metal shader cache entries: shaders=%u, completions=%u, translation_failures=%u, libraries=%u, pipelines=%u, archives=%u",
 			m_stats.shader_entries,
+			m_stats.completion_entries,
+			m_stats.translation_failure_entries,
 			m_stats.library_entries,
 			m_stats.pipeline_entries,
 			m_stats.archive_entries);
+		rsx_log.notice("Metal shader completion cache: available=%u, gated=%u",
+			m_stats.completion_available_entries,
+			m_stats.completion_gated_entries);
+		rsx_log.notice("Metal pipeline entry cache: available=%u, gated=%u, mesh=%u",
+			m_stats.pipeline_entry_available_entries,
+			m_stats.pipeline_entry_gated_entries,
+			m_stats.mesh_pipeline_entry_entries);
+		rsx_log.notice("Metal pipeline state cache: pipelines=%u, mesh=%u",
+			m_stats.pipeline_state_entries,
+			m_stats.mesh_pipeline_state_entries);
 	}
 
 	void persistent_shader_cache::store_shader_source_metadata(
@@ -870,6 +1253,56 @@ namespace rsx::metal
 		return true;
 	}
 
+	b8 persistent_shader_cache::try_find_shader_source_metadata(
+		const char* stage,
+		u64 source_hash,
+		u64 source_text_hash,
+		const std::string& entry_point,
+		const std::string& source_path,
+		shader_source_metadata& metadata,
+		std::string& error) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_shader_source_metadata(stage=%s, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, source_path=%s)",
+			stage ? stage : "<null>",
+			source_hash,
+			source_text_hash,
+			entry_point.c_str(),
+			source_path.c_str());
+
+		error.clear();
+
+		const std::string path = shader_source_metadata_path(stage, source_hash);
+		if (!fs::is_file(path))
+		{
+			return false;
+		}
+
+		if (!is_valid_shader_source_metadata(path, m_version))
+		{
+			error = fmt::format("invalid or stale shader source metadata '%s'", path);
+			return false;
+		}
+
+		shader_source_metadata loaded_metadata = load_shader_source_metadata(path);
+		if (loaded_metadata.stage != stage)
+		{
+			error = fmt::format("metadata stage '%s' does not match requested stage '%s'", loaded_metadata.stage, stage);
+			return false;
+		}
+
+		if (loaded_metadata.source_hash != source_hash ||
+			loaded_metadata.source_text_hash != source_text_hash ||
+			loaded_metadata.entry_point != entry_point ||
+			loaded_metadata.source_path != source_path)
+		{
+			error = fmt::format("metadata fields do not match requested shader source '%s'", path);
+			return false;
+		}
+
+		metadata = std::move(loaded_metadata);
+		return true;
+	}
+
 	void persistent_shader_cache::store_pipeline_entry_metadata(
 		const char* stage,
 		u32 shader_id,
@@ -883,6 +1316,8 @@ namespace rsx::metal
 	{
 		rsx_log.trace("rsx::metal::persistent_shader_cache::store_pipeline_entry_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, pipeline_source_hash=0x%llx, entry_point=%s, source_path=%s, entry_error=%s, requirement_mask=0x%x, entry_available=%u)",
 			stage ? stage : "<null>", shader_id, source_hash, pipeline_source_hash, entry_point.c_str(), source_path.c_str(), entry_error.c_str(), requirement_mask, static_cast<u32>(entry_available));
+
+		validate_pipeline_entry_requirement_mask(requirement_mask);
 
 		const std::string path = pipeline_entry_metadata_path(stage, source_hash);
 		const std::string requirement_description = describe_pipeline_entry_requirements(requirement_mask);
@@ -993,6 +1428,8 @@ namespace rsx::metal
 			fmt::throw_exception("Metal pipeline entry metadata '%s' has a zero source hash", path);
 		}
 
+		validate_pipeline_entry_requirement_mask(metadata.requirement_mask);
+
 		if (metadata.entry_available)
 		{
 			if (!metadata.pipeline_source_hash || metadata.requirement_mask || metadata.entry_point.empty() || metadata.source_path.empty())
@@ -1047,21 +1484,74 @@ namespace rsx::metal
 		return true;
 	}
 
+	b8 persistent_shader_cache::try_find_pipeline_entry_metadata(
+		const char* stage,
+		u64 source_hash,
+		pipeline_entry_metadata& metadata,
+		std::string& error) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_pipeline_entry_metadata(stage=%s, source_hash=0x%llx)",
+			stage ? stage : "<null>", source_hash);
+
+		error.clear();
+
+		const std::string path = pipeline_entry_metadata_path(stage, source_hash);
+		if (!fs::is_file(path))
+		{
+			return false;
+		}
+
+		if (!is_valid_pipeline_entry_metadata(path, m_version))
+		{
+			error = fmt::format("invalid or stale pipeline entry metadata '%s'", path);
+			return false;
+		}
+
+		pipeline_entry_metadata loaded_metadata = load_pipeline_entry_metadata(path);
+		if (loaded_metadata.stage != stage)
+		{
+			error = fmt::format("metadata stage '%s' does not match requested stage '%s'", loaded_metadata.stage, stage);
+			return false;
+		}
+
+		if (loaded_metadata.source_hash != source_hash)
+		{
+			error = fmt::format("metadata source hash 0x%llx does not match requested source hash 0x%llx",
+				loaded_metadata.source_hash,
+				source_hash);
+			return false;
+		}
+
+		metadata = std::move(loaded_metadata);
+		return true;
+	}
+
 	void persistent_shader_cache::store_shader_library_metadata(
 		const char* stage,
 		u32 shader_id,
 		u64 source_hash,
 		u64 source_text_hash,
 		const std::string& entry_point,
-		const std::string& library_path)
+		const std::string& library_path,
+		u32 pipeline_requirement_mask,
+		b8 pipeline_entry_available)
 	{
-		rsx_log.trace("rsx::metal::persistent_shader_cache::store_shader_library_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, library_path=%s)",
-			stage ? stage : "<null>", shader_id, source_hash, source_text_hash, entry_point.c_str(), library_path.c_str());
+		rsx_log.trace("rsx::metal::persistent_shader_cache::store_shader_library_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, library_path=%s, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+			stage ? stage : "<null>",
+			shader_id,
+			source_hash,
+			source_text_hash,
+			entry_point.c_str(),
+			library_path.c_str(),
+			pipeline_requirement_mask,
+			static_cast<u32>(pipeline_entry_available));
 
 		if (!source_text_hash)
 		{
 			fmt::throw_exception("Metal shader library metadata requires a non-zero source text hash");
 		}
+
+		validate_pipeline_entry_requirement_mask(pipeline_requirement_mask);
 
 		if (entry_point.empty())
 		{
@@ -1073,25 +1563,42 @@ namespace rsx::metal
 			fmt::throw_exception("Metal shader library metadata requires a library path");
 		}
 
+		if (pipeline_entry_available && pipeline_requirement_mask)
+		{
+			fmt::throw_exception("Metal shader library metadata cannot mark a pipeline entry available with unsatisfied requirements");
+		}
+
+		if (!pipeline_entry_available && !pipeline_requirement_mask)
+		{
+			fmt::throw_exception("Metal shader library metadata requires gated pipeline-entry requirements");
+		}
+
 		const std::string path = shader_library_metadata_path(stage, source_hash);
+		const std::string pipeline_requirement_description = describe_pipeline_entry_requirements(pipeline_requirement_mask);
 		const std::string metadata = fmt::format(
 			"RPCS3 Metal shader library\n"
 			"backend=metal\n"
 			"cache_version=%s\n"
-			"record_version=1\n"
+			"record_version=2\n"
 			"stage=%s\n"
 			"shader_id=%u\n"
 			"source_hash=0x%llx\n"
 			"source_text_hash=0x%llx\n"
 			"entry_point=%s\n"
-			"library_path=%s\n",
+			"library_path=%s\n"
+			"pipeline_entry_available=%u\n"
+			"pipeline_requirement_mask=0x%x\n"
+			"pipeline_requirement_description=%s\n",
 			m_version,
 			stage,
 			shader_id,
 			source_hash,
 			source_text_hash,
 			metadata_value(entry_point),
-			metadata_value(library_path));
+			metadata_value(library_path),
+			static_cast<u32>(pipeline_entry_available),
+			pipeline_requirement_mask,
+			metadata_value(pipeline_requirement_description));
 
 		if (!fs::write_file(path, fs::rewrite, metadata))
 		{
@@ -1099,7 +1606,15 @@ namespace rsx::metal
 		}
 
 		shader_library_metadata loaded_metadata;
-		if (!find_shader_library_metadata(stage, source_hash, source_text_hash, entry_point, library_path, loaded_metadata))
+		if (!find_shader_library_metadata(
+			stage,
+			source_hash,
+			source_text_hash,
+			entry_point,
+			library_path,
+			pipeline_requirement_mask,
+			pipeline_entry_available,
+			loaded_metadata))
 		{
 			fmt::throw_exception("Metal shader library metadata lookup failed after writing '%s'", path);
 		}
@@ -1138,9 +1653,19 @@ namespace rsx::metal
 		}
 
 		const u32 record_version = parse_metadata_u32(get_metadata_field(view, "record_version"), "record_version");
-		if (record_version != 1)
+		if (record_version != 1 && record_version != 2)
 		{
 			fmt::throw_exception("Metal shader library metadata '%s' has unsupported record version %u", path, record_version);
+		}
+
+		u32 pipeline_requirement_mask = 0;
+		std::string pipeline_requirement_description;
+		b8 pipeline_entry_available = false;
+		if (record_version >= 2)
+		{
+			pipeline_entry_available = parse_metadata_b8(get_metadata_field(view, "pipeline_entry_available"), "pipeline_entry_available");
+			pipeline_requirement_mask = parse_metadata_u32(get_metadata_field(view, "pipeline_requirement_mask"), "pipeline_requirement_mask");
+			pipeline_requirement_description = get_metadata_field(view, "pipeline_requirement_description");
 		}
 
 		shader_library_metadata metadata =
@@ -1151,6 +1676,9 @@ namespace rsx::metal
 			.source_text_hash = parse_metadata_u64(get_metadata_field(view, "source_text_hash"), "source_text_hash"),
 			.entry_point = get_metadata_field(view, "entry_point"),
 			.library_path = get_metadata_field(view, "library_path"),
+			.pipeline_requirement_mask = pipeline_requirement_mask,
+			.pipeline_requirement_description = std::move(pipeline_requirement_description),
+			.pipeline_entry_available = pipeline_entry_available,
 		};
 
 		if (!is_shader_library_stage(metadata.stage))
@@ -1168,10 +1696,36 @@ namespace rsx::metal
 			fmt::throw_exception("Metal shader library metadata '%s' has an empty entry point", path);
 		}
 
+		validate_pipeline_entry_requirement_mask(metadata.pipeline_requirement_mask);
+
 		if (metadata.library_path.empty() || !fs::is_file(metadata.library_path))
 		{
 			fmt::throw_exception("Metal shader library metadata '%s' points to a missing library '%s'",
 				path, metadata.library_path);
+		}
+
+		const std::string expected_requirement_description = describe_pipeline_entry_requirements(metadata.pipeline_requirement_mask);
+		if (metadata.pipeline_requirement_description.empty())
+		{
+			metadata.pipeline_requirement_description = expected_requirement_description;
+		}
+		else if (metadata.pipeline_requirement_description != expected_requirement_description)
+		{
+			fmt::throw_exception("Metal shader library metadata '%s' has pipeline requirement description '%s' but expected '%s'",
+				path, metadata.pipeline_requirement_description, expected_requirement_description);
+		}
+
+		if (record_version >= 2)
+		{
+			if (metadata.pipeline_entry_available && metadata.pipeline_requirement_mask)
+			{
+				fmt::throw_exception("Metal shader library metadata '%s' marks a pipeline entry available with requirements", path);
+			}
+
+			if (!metadata.pipeline_entry_available && !metadata.pipeline_requirement_mask)
+			{
+				fmt::throw_exception("Metal shader library metadata '%s' marks a pipeline entry gated without requirements", path);
+			}
 		}
 
 		return metadata;
@@ -1183,10 +1737,18 @@ namespace rsx::metal
 		u64 source_text_hash,
 		const std::string& entry_point,
 		const std::string& library_path,
+		u32 pipeline_requirement_mask,
+		b8 pipeline_entry_available,
 		shader_library_metadata& metadata) const
 	{
-		rsx_log.trace("rsx::metal::persistent_shader_cache::find_shader_library_metadata(stage=%s, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, library_path=%s)",
-			stage ? stage : "<null>", source_hash, source_text_hash, entry_point.c_str(), library_path.c_str());
+		rsx_log.trace("rsx::metal::persistent_shader_cache::find_shader_library_metadata(stage=%s, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, library_path=%s, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+			stage ? stage : "<null>",
+			source_hash,
+			source_text_hash,
+			entry_point.c_str(),
+			library_path.c_str(),
+			pipeline_requirement_mask,
+			static_cast<u32>(pipeline_entry_available));
 
 		const std::string path = shader_library_metadata_path(stage, source_hash);
 		if (!fs::is_file(path))
@@ -1204,9 +1766,640 @@ namespace rsx::metal
 		if (loaded_metadata.source_hash != source_hash ||
 			loaded_metadata.source_text_hash != source_text_hash ||
 			loaded_metadata.entry_point != entry_point ||
-			loaded_metadata.library_path != library_path)
+			loaded_metadata.library_path != library_path ||
+			loaded_metadata.pipeline_requirement_mask != pipeline_requirement_mask ||
+			loaded_metadata.pipeline_entry_available != pipeline_entry_available)
 		{
 			rsx_log.warning("Metal shader library metadata mismatch for '%s'", path);
+			return false;
+		}
+
+		metadata = std::move(loaded_metadata);
+		return true;
+	}
+
+	b8 persistent_shader_cache::try_find_shader_library_metadata(
+		const char* stage,
+		u64 source_hash,
+		u64 source_text_hash,
+		const std::string& entry_point,
+		const std::string& library_path,
+		u32 pipeline_requirement_mask,
+		b8 pipeline_entry_available,
+		shader_library_metadata& metadata,
+		std::string& error) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_shader_library_metadata(stage=%s, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, library_path=%s, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+			stage ? stage : "<null>",
+			source_hash,
+			source_text_hash,
+			entry_point.c_str(),
+			library_path.c_str(),
+			pipeline_requirement_mask,
+			static_cast<u32>(pipeline_entry_available));
+
+		error.clear();
+
+		const std::string path = shader_library_metadata_path(stage, source_hash);
+		if (!fs::is_file(path))
+		{
+			return false;
+		}
+
+		if (!is_valid_shader_library_metadata(path, m_version))
+		{
+			error = fmt::format("invalid or stale shader library metadata '%s'", path);
+			return false;
+		}
+
+		shader_library_metadata loaded_metadata = load_shader_library_metadata(path);
+		if (loaded_metadata.stage != stage)
+		{
+			error = fmt::format("metadata stage '%s' does not match requested stage '%s'", loaded_metadata.stage, stage);
+			return false;
+		}
+
+		if (loaded_metadata.source_hash != source_hash ||
+			loaded_metadata.source_text_hash != source_text_hash ||
+			loaded_metadata.entry_point != entry_point ||
+			loaded_metadata.library_path != library_path ||
+			loaded_metadata.pipeline_requirement_mask != pipeline_requirement_mask ||
+			loaded_metadata.pipeline_entry_available != pipeline_entry_available)
+		{
+			error = fmt::format("metadata fields do not match requested shader library '%s'", path);
+			return false;
+		}
+
+		metadata = std::move(loaded_metadata);
+		return true;
+	}
+
+	void persistent_shader_cache::store_shader_completion_metadata(
+		const char* stage,
+		u32 shader_id,
+		u64 source_hash,
+		u64 source_text_hash,
+		const std::string& entry_point,
+		const std::string& source_path,
+		u64 pipeline_source_hash,
+		const std::string& pipeline_entry_point,
+		const std::string& pipeline_source_path,
+		const std::string& pipeline_entry_error,
+		u32 pipeline_requirement_mask,
+		b8 pipeline_entry_available)
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::store_shader_completion_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+			stage ? stage : "<null>",
+			shader_id,
+			source_hash,
+			source_text_hash,
+			pipeline_source_hash,
+			pipeline_requirement_mask,
+			static_cast<u32>(pipeline_entry_available));
+
+		if (!source_text_hash)
+		{
+			fmt::throw_exception("Metal shader completion metadata requires a non-zero source text hash");
+		}
+
+		validate_pipeline_entry_requirement_mask(pipeline_requirement_mask);
+
+		if (entry_point.empty())
+		{
+			fmt::throw_exception("Metal shader completion metadata requires a helper entry point");
+		}
+
+		if (source_path.empty())
+		{
+			fmt::throw_exception("Metal shader completion metadata requires a helper source path");
+		}
+
+		u64 actual_source_text_hash = 0;
+		if (!get_file_text_hash(source_path, actual_source_text_hash) || actual_source_text_hash != source_text_hash)
+		{
+			fmt::throw_exception("Metal shader completion metadata source hash mismatch for '%s'", source_path);
+		}
+
+		if (pipeline_entry_available)
+		{
+			if (!pipeline_source_hash || pipeline_entry_point.empty() || pipeline_source_path.empty() || !pipeline_entry_error.empty() || pipeline_requirement_mask)
+			{
+				fmt::throw_exception("Metal shader completion metadata marks a pipeline entry available but the executable source record is incomplete");
+			}
+
+			u64 actual_pipeline_source_hash = 0;
+			if (!get_file_text_hash(pipeline_source_path, actual_pipeline_source_hash) || actual_pipeline_source_hash != pipeline_source_hash)
+			{
+				fmt::throw_exception("Metal shader completion metadata pipeline source hash mismatch for '%s'", pipeline_source_path);
+			}
+		}
+		else if (pipeline_source_hash || !pipeline_entry_point.empty() || !pipeline_source_path.empty() || !pipeline_requirement_mask || pipeline_entry_error.empty())
+		{
+			fmt::throw_exception("Metal shader completion metadata marks a pipeline entry gated but the requirement record is incomplete");
+		}
+
+		const std::string path = shader_completion_metadata_path(stage, source_hash);
+		const std::string pipeline_requirement_description = describe_pipeline_entry_requirements(pipeline_requirement_mask);
+		const std::string metadata = fmt::format(
+			"RPCS3 Metal shader completion\n"
+			"backend=metal\n"
+			"cache_version=%s\n"
+			"record_version=1\n"
+			"stage=%s\n"
+			"shader_id=%u\n"
+			"source_hash=0x%llx\n"
+			"source_text_hash=0x%llx\n"
+			"entry_point=%s\n"
+			"source_path=%s\n"
+			"pipeline_source_hash=0x%llx\n"
+			"pipeline_entry_available=%u\n"
+			"pipeline_requirement_mask=0x%x\n"
+			"pipeline_requirement_description=%s\n"
+			"pipeline_entry_point=%s\n"
+			"pipeline_source_path=%s\n"
+			"pipeline_entry_error=%s\n",
+			m_version,
+			stage,
+			shader_id,
+			source_hash,
+			source_text_hash,
+			metadata_value(entry_point),
+			metadata_value(source_path),
+			pipeline_source_hash,
+			static_cast<u32>(pipeline_entry_available),
+			pipeline_requirement_mask,
+			metadata_value(pipeline_requirement_description),
+			metadata_value(pipeline_entry_point),
+			metadata_value(pipeline_source_path),
+			metadata_value(pipeline_entry_error));
+
+		if (!fs::write_file(path, fs::rewrite, metadata))
+		{
+			fmt::throw_exception("Metal shader completion metadata write failed for '%s' (%s)", path, fs::g_tls_error);
+		}
+
+		shader_completion_metadata loaded_metadata;
+		if (!find_shader_completion_metadata(
+			stage,
+			source_hash,
+			source_text_hash,
+			entry_point,
+			source_path,
+			pipeline_source_hash,
+			pipeline_entry_point,
+			pipeline_source_path,
+			pipeline_entry_error,
+			pipeline_requirement_mask,
+			pipeline_entry_available,
+			loaded_metadata))
+		{
+			fmt::throw_exception("Metal shader completion metadata lookup failed after writing '%s'", path);
+		}
+
+		refresh_stats();
+	}
+
+	shader_completion_metadata persistent_shader_cache::load_shader_completion_metadata(const std::string& path) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::load_shader_completion_metadata(path=%s)", path);
+
+		fs::file file{path, fs::read};
+		if (!file)
+		{
+			fmt::throw_exception("Metal shader completion metadata '%s' is not readable", path);
+		}
+
+		std::string text = file.to_string();
+		std::string_view view = text;
+		const std::string_view header = take_metadata_line(view);
+		if (header != "RPCS3 Metal shader completion")
+		{
+			fmt::throw_exception("Metal shader completion metadata '%s' has an invalid header", path);
+		}
+
+		const std::string backend = get_metadata_field(view, "backend");
+		if (backend != "metal")
+		{
+			fmt::throw_exception("Metal shader completion metadata '%s' has incompatible backend '%s'", path, backend);
+		}
+
+		const std::string cache_version = get_metadata_field(view, "cache_version");
+		if (cache_version != m_version)
+		{
+			fmt::throw_exception("Metal shader completion metadata '%s' has incompatible cache version '%s'", path, cache_version);
+		}
+
+		const u32 record_version = parse_metadata_u32(get_metadata_field(view, "record_version"), "record_version");
+		if (record_version != 1)
+		{
+			fmt::throw_exception("Metal shader completion metadata '%s' has unsupported record version %u", path, record_version);
+		}
+
+		shader_completion_metadata metadata =
+		{
+			.stage = get_metadata_field(view, "stage"),
+			.shader_id = parse_metadata_u32(get_metadata_field(view, "shader_id"), "shader_id"),
+			.source_hash = parse_metadata_u64(get_metadata_field(view, "source_hash"), "source_hash"),
+			.source_text_hash = parse_metadata_u64(get_metadata_field(view, "source_text_hash"), "source_text_hash"),
+			.entry_point = get_metadata_field(view, "entry_point"),
+			.source_path = get_metadata_field(view, "source_path"),
+			.pipeline_source_hash = parse_metadata_u64(get_metadata_field(view, "pipeline_source_hash"), "pipeline_source_hash"),
+			.pipeline_entry_point = get_metadata_field(view, "pipeline_entry_point"),
+			.pipeline_source_path = get_metadata_field(view, "pipeline_source_path"),
+			.pipeline_entry_error = get_metadata_field(view, "pipeline_entry_error"),
+			.pipeline_requirement_mask = parse_metadata_u32(get_metadata_field(view, "pipeline_requirement_mask"), "pipeline_requirement_mask"),
+			.pipeline_requirement_description = get_metadata_field(view, "pipeline_requirement_description"),
+			.pipeline_entry_available = parse_metadata_b8(get_metadata_field(view, "pipeline_entry_available"), "pipeline_entry_available"),
+		};
+
+		if (!is_shader_completion_stage(metadata.stage))
+		{
+			fmt::throw_exception("Metal shader completion metadata '%s' has invalid stage '%s'", path, metadata.stage);
+		}
+
+		if (!metadata.source_hash || !metadata.source_text_hash)
+		{
+			fmt::throw_exception("Metal shader completion metadata '%s' has a zero shader hash", path);
+		}
+
+		if (metadata.entry_point.empty())
+		{
+			fmt::throw_exception("Metal shader completion metadata '%s' has an empty helper entry point", path);
+		}
+
+		validate_pipeline_entry_requirement_mask(metadata.pipeline_requirement_mask);
+
+		u64 actual_source_text_hash = 0;
+		if (metadata.source_path.empty() ||
+			!get_file_text_hash(metadata.source_path, actual_source_text_hash) ||
+			actual_source_text_hash != metadata.source_text_hash)
+		{
+			fmt::throw_exception("Metal shader completion metadata '%s' points to an invalid helper source '%s'",
+				path, metadata.source_path);
+		}
+
+		const std::string expected_requirement_description = describe_pipeline_entry_requirements(metadata.pipeline_requirement_mask);
+		if (metadata.pipeline_requirement_description != expected_requirement_description)
+		{
+			fmt::throw_exception("Metal shader completion metadata '%s' has requirement description '%s' but expected '%s'",
+				path, metadata.pipeline_requirement_description, expected_requirement_description);
+		}
+
+		if (metadata.pipeline_entry_available)
+		{
+			if (!metadata.pipeline_source_hash || metadata.pipeline_requirement_mask || metadata.pipeline_entry_point.empty() || metadata.pipeline_source_path.empty() || !metadata.pipeline_entry_error.empty())
+			{
+				fmt::throw_exception("Metal shader completion metadata '%s' marks a pipeline entry available without executable source data", path);
+			}
+
+			u64 actual_pipeline_source_hash = 0;
+			if (!get_file_text_hash(metadata.pipeline_source_path, actual_pipeline_source_hash) ||
+				actual_pipeline_source_hash != metadata.pipeline_source_hash)
+			{
+				fmt::throw_exception("Metal shader completion metadata '%s' points to an invalid pipeline source '%s'",
+					path, metadata.pipeline_source_path);
+			}
+		}
+		else if (metadata.pipeline_source_hash || !metadata.pipeline_entry_point.empty() || !metadata.pipeline_source_path.empty() || !metadata.pipeline_requirement_mask || metadata.pipeline_entry_error.empty())
+		{
+			fmt::throw_exception("Metal shader completion metadata '%s' marks a pipeline entry gated without requirements or a reason", path);
+		}
+
+		return metadata;
+	}
+
+	b8 persistent_shader_cache::find_shader_completion_metadata(
+		const char* stage,
+		u64 source_hash,
+		u64 source_text_hash,
+		const std::string& entry_point,
+		const std::string& source_path,
+		u64 pipeline_source_hash,
+		const std::string& pipeline_entry_point,
+		const std::string& pipeline_source_path,
+		const std::string& pipeline_entry_error,
+		u32 pipeline_requirement_mask,
+		b8 pipeline_entry_available,
+		shader_completion_metadata& metadata) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::find_shader_completion_metadata(stage=%s, source_hash=0x%llx, source_text_hash=0x%llx, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+			stage ? stage : "<null>",
+			source_hash,
+			source_text_hash,
+			pipeline_source_hash,
+			pipeline_requirement_mask,
+			static_cast<u32>(pipeline_entry_available));
+
+		const std::string path = shader_completion_metadata_path(stage, source_hash);
+		if (!fs::is_file(path))
+		{
+			return false;
+		}
+
+		shader_completion_metadata loaded_metadata = load_shader_completion_metadata(path);
+		if (loaded_metadata.stage != stage)
+		{
+			fmt::throw_exception("Metal shader completion metadata '%s' has stage '%s' but lookup requested '%s'",
+				path, loaded_metadata.stage, stage);
+		}
+
+		if (loaded_metadata.source_hash != source_hash ||
+			loaded_metadata.source_text_hash != source_text_hash ||
+			loaded_metadata.entry_point != entry_point ||
+			loaded_metadata.source_path != source_path ||
+			loaded_metadata.pipeline_source_hash != pipeline_source_hash ||
+			loaded_metadata.pipeline_entry_point != pipeline_entry_point ||
+			loaded_metadata.pipeline_source_path != pipeline_source_path ||
+			loaded_metadata.pipeline_entry_error != pipeline_entry_error ||
+			loaded_metadata.pipeline_requirement_mask != pipeline_requirement_mask ||
+			loaded_metadata.pipeline_entry_available != pipeline_entry_available)
+		{
+			rsx_log.warning("Metal shader completion metadata mismatch for '%s'", path);
+			return false;
+		}
+
+		metadata = std::move(loaded_metadata);
+		return true;
+	}
+
+	b8 persistent_shader_cache::try_find_shader_completion_metadata(
+		const char* stage,
+		u64 source_hash,
+		u64 source_text_hash,
+		const std::string& entry_point,
+		const std::string& source_path,
+		u64 pipeline_source_hash,
+		const std::string& pipeline_entry_point,
+		const std::string& pipeline_source_path,
+		const std::string& pipeline_entry_error,
+		u32 pipeline_requirement_mask,
+		b8 pipeline_entry_available,
+		shader_completion_metadata& metadata,
+		std::string& error) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_shader_completion_metadata(stage=%s, source_hash=0x%llx, source_text_hash=0x%llx, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+			stage ? stage : "<null>",
+			source_hash,
+			source_text_hash,
+			pipeline_source_hash,
+			pipeline_requirement_mask,
+			static_cast<u32>(pipeline_entry_available));
+
+		error.clear();
+
+		const std::string path = shader_completion_metadata_path(stage, source_hash);
+		if (!fs::is_file(path))
+		{
+			return false;
+		}
+
+		if (!is_valid_shader_completion_metadata(path, m_version))
+		{
+			error = fmt::format("invalid or stale shader completion metadata '%s'", path);
+			return false;
+		}
+
+		shader_completion_metadata loaded_metadata = load_shader_completion_metadata(path);
+		if (loaded_metadata.stage != stage)
+		{
+			error = fmt::format("metadata stage '%s' does not match requested stage '%s'", loaded_metadata.stage, stage);
+			return false;
+		}
+
+		if (loaded_metadata.source_hash != source_hash ||
+			loaded_metadata.source_text_hash != source_text_hash ||
+			loaded_metadata.entry_point != entry_point ||
+			loaded_metadata.source_path != source_path ||
+			loaded_metadata.pipeline_source_hash != pipeline_source_hash ||
+			loaded_metadata.pipeline_entry_point != pipeline_entry_point ||
+			loaded_metadata.pipeline_source_path != pipeline_source_path ||
+			loaded_metadata.pipeline_entry_error != pipeline_entry_error ||
+			loaded_metadata.pipeline_requirement_mask != pipeline_requirement_mask ||
+			loaded_metadata.pipeline_entry_available != pipeline_entry_available)
+		{
+			error = fmt::format("metadata fields do not match requested shader completion '%s'", path);
+			return false;
+		}
+
+		metadata = std::move(loaded_metadata);
+		return true;
+	}
+
+	b8 persistent_shader_cache::try_load_shader_completion_metadata(
+		const char* stage,
+		u64 source_hash,
+		shader_completion_metadata& metadata,
+		std::string& error) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::try_load_shader_completion_metadata(stage=%s, source_hash=0x%llx)",
+			stage ? stage : "<null>",
+			source_hash);
+
+		error.clear();
+
+		const std::string path = shader_completion_metadata_path(stage, source_hash);
+		if (!fs::is_file(path))
+		{
+			return false;
+		}
+
+		if (!is_valid_shader_completion_metadata(path, m_version))
+		{
+			error = fmt::format("invalid or stale shader completion metadata '%s'", path);
+			return false;
+		}
+
+		shader_completion_metadata loaded_metadata = load_shader_completion_metadata(path);
+		if (loaded_metadata.stage != stage)
+		{
+			error = fmt::format("metadata stage '%s' does not match requested stage '%s'", loaded_metadata.stage, stage);
+			return false;
+		}
+
+		if (loaded_metadata.source_hash != source_hash)
+		{
+			error = fmt::format("metadata source hash 0x%llx does not match requested source hash 0x%llx",
+				loaded_metadata.source_hash,
+				source_hash);
+			return false;
+		}
+
+		metadata = std::move(loaded_metadata);
+		return true;
+	}
+
+	void persistent_shader_cache::store_shader_translation_failure_metadata(
+		const char* stage,
+		u32 shader_id,
+		u64 source_hash,
+		const std::string& failure_reason)
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::store_shader_translation_failure_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, failure_reason=%s)",
+			stage ? stage : "<null>", shader_id, source_hash, failure_reason.c_str());
+
+		if (!source_hash)
+		{
+			fmt::throw_exception("Metal shader translation failure metadata requires a non-zero source hash");
+		}
+
+		if (failure_reason.empty())
+		{
+			fmt::throw_exception("Metal shader translation failure metadata requires a failure reason");
+		}
+
+		const std::string path = shader_translation_failure_metadata_path(stage, source_hash);
+		const std::string metadata = fmt::format(
+			"RPCS3 Metal shader translation failure\n"
+			"backend=metal\n"
+			"cache_version=%s\n"
+			"record_version=1\n"
+			"stage=%s\n"
+			"shader_id=%u\n"
+			"source_hash=0x%llx\n"
+			"failure_reason=%s\n",
+			m_version,
+			stage,
+			shader_id,
+			source_hash,
+			metadata_value(failure_reason));
+
+		if (!fs::write_file(path, fs::rewrite, metadata))
+		{
+			fmt::throw_exception("Metal shader translation failure metadata write failed for '%s' (%s)", path, fs::g_tls_error);
+		}
+
+		(void)load_shader_translation_failure_metadata(path);
+		refresh_stats();
+	}
+
+	shader_translation_failure_metadata persistent_shader_cache::load_shader_translation_failure_metadata(const std::string& path) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::load_shader_translation_failure_metadata(path=%s)", path);
+
+		fs::file file{path, fs::read};
+		if (!file)
+		{
+			fmt::throw_exception("Metal shader translation failure metadata '%s' is not readable", path);
+		}
+
+		std::string text = file.to_string();
+		std::string_view view = text;
+		const std::string_view header = take_metadata_line(view);
+		if (header != "RPCS3 Metal shader translation failure")
+		{
+			fmt::throw_exception("Metal shader translation failure metadata '%s' has an invalid header", path);
+		}
+
+		const std::string backend = get_metadata_field(view, "backend");
+		if (backend != "metal")
+		{
+			fmt::throw_exception("Metal shader translation failure metadata '%s' has incompatible backend '%s'", path, backend);
+		}
+
+		const std::string cache_version = get_metadata_field(view, "cache_version");
+		if (cache_version != m_version)
+		{
+			fmt::throw_exception("Metal shader translation failure metadata '%s' has incompatible cache version '%s'", path, cache_version);
+		}
+
+		const u32 record_version = parse_metadata_u32(get_metadata_field(view, "record_version"), "record_version");
+		if (record_version != 1)
+		{
+			fmt::throw_exception("Metal shader translation failure metadata '%s' has unsupported record version %u", path, record_version);
+		}
+
+		shader_translation_failure_metadata metadata =
+		{
+			.stage = get_metadata_field(view, "stage"),
+			.shader_id = parse_metadata_u32(get_metadata_field(view, "shader_id"), "shader_id"),
+			.source_hash = parse_metadata_u64(get_metadata_field(view, "source_hash"), "source_hash"),
+			.failure_reason = get_metadata_field(view, "failure_reason"),
+		};
+
+		if (!is_shader_translation_failure_stage(metadata.stage))
+		{
+			fmt::throw_exception("Metal shader translation failure metadata '%s' has invalid stage '%s'", path, metadata.stage);
+		}
+
+		if (!metadata.source_hash)
+		{
+			fmt::throw_exception("Metal shader translation failure metadata '%s' has a zero source hash", path);
+		}
+
+		if (metadata.failure_reason.empty())
+		{
+			fmt::throw_exception("Metal shader translation failure metadata '%s' has an empty failure reason", path);
+		}
+
+		return metadata;
+	}
+
+	b8 persistent_shader_cache::find_shader_translation_failure_metadata(
+		const char* stage,
+		u64 source_hash,
+		shader_translation_failure_metadata& metadata) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::find_shader_translation_failure_metadata(stage=%s, source_hash=0x%llx)",
+			stage ? stage : "<null>", source_hash);
+
+		const std::string path = shader_translation_failure_metadata_path(stage, source_hash);
+		if (!fs::is_file(path))
+		{
+			return false;
+		}
+
+		shader_translation_failure_metadata loaded_metadata = load_shader_translation_failure_metadata(path);
+		if (loaded_metadata.stage != stage)
+		{
+			fmt::throw_exception("Metal shader translation failure metadata '%s' has stage '%s' but lookup requested '%s'",
+				path, loaded_metadata.stage, stage);
+		}
+
+		if (loaded_metadata.source_hash != source_hash)
+		{
+			fmt::throw_exception("Metal shader translation failure metadata '%s' has source hash 0x%llx but lookup requested 0x%llx",
+				path, loaded_metadata.source_hash, source_hash);
+		}
+
+		metadata = std::move(loaded_metadata);
+		return true;
+	}
+
+	b8 persistent_shader_cache::try_find_shader_translation_failure_metadata(
+		const char* stage,
+		u64 source_hash,
+		shader_translation_failure_metadata& metadata,
+		std::string& error) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_shader_translation_failure_metadata(stage=%s, source_hash=0x%llx)",
+			stage ? stage : "<null>", source_hash);
+
+		error.clear();
+
+		const std::string path = shader_translation_failure_metadata_path(stage, source_hash);
+		if (!fs::is_file(path))
+		{
+			return false;
+		}
+
+		if (!is_valid_shader_translation_failure_metadata(path, m_version))
+		{
+			error = fmt::format("invalid or stale shader translation failure metadata '%s'", path);
+			return false;
+		}
+
+		shader_translation_failure_metadata loaded_metadata = load_shader_translation_failure_metadata(path);
+		if (loaded_metadata.stage != stage)
+		{
+			error = fmt::format("metadata stage '%s' does not match requested stage '%s'", loaded_metadata.stage, stage);
+			return false;
+		}
+
+		if (loaded_metadata.source_hash != source_hash)
+		{
+			error = fmt::format("metadata source hash 0x%llx does not match requested source hash 0x%llx",
+				loaded_metadata.source_hash,
+				source_hash);
 			return false;
 		}
 
@@ -1350,6 +2543,268 @@ namespace rsx::metal
 		return true;
 	}
 
+	b8 persistent_shader_cache::try_find_pipeline_archive_metadata(pipeline_archive_metadata& metadata, std::string& error) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_pipeline_archive_metadata()");
+
+		error.clear();
+
+		const std::string path = pipeline_archive_metadata_path();
+		if (!fs::is_file(path))
+		{
+			return false;
+		}
+
+		if (!is_valid_pipeline_archive_metadata(path, m_version))
+		{
+			error = fmt::format("invalid or stale pipeline archive metadata '%s'", path);
+			return false;
+		}
+
+		metadata = load_pipeline_archive_metadata(path);
+		return true;
+	}
+
+	void persistent_shader_cache::store_pipeline_state_metadata(
+		const char* pipeline_type,
+		u64 pipeline_hash,
+		u64 vertex_source_hash,
+		u64 fragment_source_hash,
+		u64 object_source_hash,
+		u64 mesh_source_hash,
+		u64 linked_library_hash,
+		u32 linked_library_count,
+		u32 color_pixel_format,
+		u32 raster_sample_count,
+		b8 rasterization_enabled)
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::store_pipeline_state_metadata(pipeline_type=%s, pipeline_hash=0x%llx, vertex=0x%llx, fragment=0x%llx, object=0x%llx, mesh=0x%llx, linked_library_hash=0x%llx, linked_library_count=%u)",
+			pipeline_type ? pipeline_type : "<null>",
+			pipeline_hash,
+			vertex_source_hash,
+			fragment_source_hash,
+			object_source_hash,
+			mesh_source_hash,
+			linked_library_hash,
+			linked_library_count);
+
+		if (!pipeline_type || !is_pipeline_state_type(pipeline_type))
+		{
+			fmt::throw_exception("Metal pipeline state metadata requires a valid pipeline type");
+		}
+
+		if (!pipeline_hash)
+		{
+			fmt::throw_exception("Metal pipeline state metadata requires a non-zero pipeline hash");
+		}
+
+		if (!color_pixel_format || !raster_sample_count)
+		{
+			fmt::throw_exception("Metal pipeline state metadata requires color format and sample count");
+		}
+
+		if ((linked_library_count && !linked_library_hash) || (!linked_library_count && linked_library_hash))
+		{
+			fmt::throw_exception("Metal pipeline state metadata has inconsistent linked library dependency state");
+		}
+
+		if (std::string_view(pipeline_type) == "render")
+		{
+			if (!vertex_source_hash || object_source_hash || mesh_source_hash || (rasterization_enabled ? !fragment_source_hash : !!fragment_source_hash))
+			{
+				fmt::throw_exception("Metal render pipeline state metadata has invalid shader dependencies");
+			}
+		}
+		else if (vertex_source_hash || !mesh_source_hash || (rasterization_enabled ? !fragment_source_hash : !!fragment_source_hash))
+		{
+			fmt::throw_exception("Metal mesh pipeline state metadata has invalid shader dependencies");
+		}
+
+		const std::string path = pipeline_state_metadata_path(pipeline_type, pipeline_hash);
+		const std::string metadata = fmt::format(
+			"RPCS3 Metal pipeline state\n"
+			"backend=metal\n"
+			"cache_version=%s\n"
+			"record_version=1\n"
+			"pipeline_type=%s\n"
+			"pipeline_hash=0x%llx\n"
+			"vertex_source_hash=0x%llx\n"
+			"fragment_source_hash=0x%llx\n"
+			"object_source_hash=0x%llx\n"
+			"mesh_source_hash=0x%llx\n"
+			"linked_library_hash=0x%llx\n"
+			"linked_library_count=%u\n"
+			"color_pixel_format=%u\n"
+			"raster_sample_count=%u\n"
+			"rasterization_enabled=%u\n",
+			m_version,
+			metadata_value(pipeline_type),
+			pipeline_hash,
+			vertex_source_hash,
+			fragment_source_hash,
+			object_source_hash,
+			mesh_source_hash,
+			linked_library_hash,
+			linked_library_count,
+			color_pixel_format,
+			raster_sample_count,
+			static_cast<u32>(rasterization_enabled));
+
+		if (!fs::write_file(path, fs::rewrite, metadata))
+		{
+			fmt::throw_exception("Metal pipeline state metadata write failed for '%s' (%s)", path, fs::g_tls_error);
+		}
+
+		pipeline_state_metadata loaded_metadata;
+		if (!find_pipeline_state_metadata(pipeline_type, pipeline_hash, loaded_metadata))
+		{
+			fmt::throw_exception("Metal pipeline state metadata lookup failed after writing '%s'", path);
+		}
+
+		refresh_stats();
+	}
+
+	pipeline_state_metadata persistent_shader_cache::load_pipeline_state_metadata(const std::string& path) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::load_pipeline_state_metadata(path=%s)", path);
+
+		fs::file file{path, fs::read};
+		if (!file)
+		{
+			fmt::throw_exception("Metal pipeline state metadata '%s' is not readable", path);
+		}
+
+		std::string text = file.to_string();
+		std::string_view view = text;
+		const std::string_view header = take_metadata_line(view);
+		if (header != "RPCS3 Metal pipeline state")
+		{
+			fmt::throw_exception("Metal pipeline state metadata '%s' has an invalid header", path);
+		}
+
+		const std::string backend = get_metadata_field(view, "backend");
+		if (backend != "metal")
+		{
+			fmt::throw_exception("Metal pipeline state metadata '%s' has incompatible backend '%s'", path, backend);
+		}
+
+		const std::string cache_version = get_metadata_field(view, "cache_version");
+		if (cache_version != m_version)
+		{
+			fmt::throw_exception("Metal pipeline state metadata '%s' has incompatible cache version '%s'", path, cache_version);
+		}
+
+		const u32 record_version = parse_metadata_u32(get_metadata_field(view, "record_version"), "record_version");
+		if (record_version != 1)
+		{
+			fmt::throw_exception("Metal pipeline state metadata '%s' has unsupported record version %u", path, record_version);
+		}
+
+		pipeline_state_metadata metadata =
+		{
+			.pipeline_type = get_metadata_field(view, "pipeline_type"),
+			.pipeline_hash = parse_metadata_u64(get_metadata_field(view, "pipeline_hash"), "pipeline_hash"),
+			.vertex_source_hash = parse_metadata_u64(get_metadata_field(view, "vertex_source_hash"), "vertex_source_hash"),
+			.fragment_source_hash = parse_metadata_u64(get_metadata_field(view, "fragment_source_hash"), "fragment_source_hash"),
+			.object_source_hash = parse_metadata_u64(get_metadata_field(view, "object_source_hash"), "object_source_hash"),
+			.mesh_source_hash = parse_metadata_u64(get_metadata_field(view, "mesh_source_hash"), "mesh_source_hash"),
+			.linked_library_hash = parse_metadata_u64(get_metadata_field(view, "linked_library_hash"), "linked_library_hash"),
+			.linked_library_count = parse_metadata_u32(get_metadata_field(view, "linked_library_count"), "linked_library_count"),
+			.color_pixel_format = parse_metadata_u32(get_metadata_field(view, "color_pixel_format"), "color_pixel_format"),
+			.raster_sample_count = parse_metadata_u32(get_metadata_field(view, "raster_sample_count"), "raster_sample_count"),
+			.rasterization_enabled = parse_metadata_b8(get_metadata_field(view, "rasterization_enabled"), "rasterization_enabled"),
+		};
+
+		if (!is_pipeline_state_type(metadata.pipeline_type))
+		{
+			fmt::throw_exception("Metal pipeline state metadata '%s' has invalid pipeline type '%s'", path, metadata.pipeline_type);
+		}
+
+		if (!metadata.pipeline_hash || !metadata.color_pixel_format || !metadata.raster_sample_count)
+		{
+			fmt::throw_exception("Metal pipeline state metadata '%s' has missing pipeline state data", path);
+		}
+
+		if ((metadata.linked_library_count && !metadata.linked_library_hash) || (!metadata.linked_library_count && metadata.linked_library_hash))
+		{
+			fmt::throw_exception("Metal pipeline state metadata '%s' has inconsistent linked library dependency state", path);
+		}
+
+		if (metadata.pipeline_type == "render")
+		{
+			if (!metadata.vertex_source_hash || metadata.object_source_hash || metadata.mesh_source_hash ||
+				(metadata.rasterization_enabled ? !metadata.fragment_source_hash : !!metadata.fragment_source_hash))
+			{
+				fmt::throw_exception("Metal render pipeline state metadata '%s' has invalid shader dependencies", path);
+			}
+		}
+		else if (metadata.vertex_source_hash || !metadata.mesh_source_hash ||
+			(metadata.rasterization_enabled ? !metadata.fragment_source_hash : !!metadata.fragment_source_hash))
+		{
+			fmt::throw_exception("Metal mesh pipeline state metadata '%s' has invalid shader dependencies", path);
+		}
+
+		return metadata;
+	}
+
+	b8 persistent_shader_cache::find_pipeline_state_metadata(
+		const char* pipeline_type,
+		u64 pipeline_hash,
+		pipeline_state_metadata& metadata) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::find_pipeline_state_metadata(pipeline_type=%s, pipeline_hash=0x%llx)",
+			pipeline_type ? pipeline_type : "<null>", pipeline_hash);
+
+		const std::string path = pipeline_state_metadata_path(pipeline_type, pipeline_hash);
+		if (!fs::is_file(path))
+		{
+			return false;
+		}
+
+		pipeline_state_metadata loaded_metadata = load_pipeline_state_metadata(path);
+		if (loaded_metadata.pipeline_type != pipeline_type)
+		{
+			fmt::throw_exception("Metal pipeline state metadata '%s' has type '%s' but lookup requested '%s'",
+				path, loaded_metadata.pipeline_type, pipeline_type);
+		}
+
+		if (loaded_metadata.pipeline_hash != pipeline_hash)
+		{
+			fmt::throw_exception("Metal pipeline state metadata '%s' has pipeline hash 0x%llx but lookup requested 0x%llx",
+				path, loaded_metadata.pipeline_hash, pipeline_hash);
+		}
+
+		metadata = std::move(loaded_metadata);
+		return true;
+	}
+
+	b8 persistent_shader_cache::try_find_pipeline_state_metadata(
+		const char* pipeline_type,
+		u64 pipeline_hash,
+		pipeline_state_metadata& metadata,
+		std::string& error) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_pipeline_state_metadata(pipeline_type=%s, pipeline_hash=0x%llx)",
+			pipeline_type ? pipeline_type : "<null>", pipeline_hash);
+
+		error.clear();
+
+		const std::string path = pipeline_state_metadata_path(pipeline_type, pipeline_hash);
+		if (!fs::is_file(path))
+		{
+			return false;
+		}
+
+		if (!is_valid_pipeline_state_metadata(path, m_version))
+		{
+			error = fmt::format("invalid or stale pipeline state metadata '%s'", path);
+			return false;
+		}
+
+		metadata = load_pipeline_state_metadata(path);
+		return true;
+	}
+
 	const std::string& persistent_shader_cache::root_path() const
 	{
 		rsx_log.trace("rsx::metal::persistent_shader_cache::root_path()");
@@ -1372,6 +2827,12 @@ namespace rsx::metal
 	{
 		rsx_log.trace("rsx::metal::persistent_shader_cache::library_path()");
 		return m_library_path;
+	}
+
+	const std::string& persistent_shader_cache::completion_path() const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::completion_path()");
+		return m_completion_path;
 	}
 
 	const std::string& persistent_shader_cache::pipeline_path() const
@@ -1494,10 +2955,64 @@ namespace rsx::metal
 		return m_library_path + fmt::format("%llX.%s.metallib.txt", source_hash, stage);
 	}
 
+	std::string persistent_shader_cache::shader_completion_metadata_path(const char* stage, u64 source_hash) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::shader_completion_metadata_path(stage=%s, source_hash=0x%llx)",
+			stage ? stage : "<null>", source_hash);
+
+		if (!stage || !stage[0])
+		{
+			fmt::throw_exception("Metal shader completion metadata requires a shader stage");
+		}
+
+		if (!source_hash)
+		{
+			fmt::throw_exception("Metal shader completion metadata requires a non-zero source hash");
+		}
+
+		return m_completion_path + fmt::format("%llX.%s.complete.txt", source_hash, stage);
+	}
+
+	std::string persistent_shader_cache::shader_translation_failure_metadata_path(const char* stage, u64 source_hash) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::shader_translation_failure_metadata_path(stage=%s, source_hash=0x%llx)",
+			stage ? stage : "<null>", source_hash);
+
+		if (!stage || !stage[0])
+		{
+			fmt::throw_exception("Metal shader translation failure metadata requires a shader stage");
+		}
+
+		if (!source_hash)
+		{
+			fmt::throw_exception("Metal shader translation failure metadata requires a non-zero source hash");
+		}
+
+		return m_raw_shader_path + fmt::format("%llX.%s.failure.txt", source_hash, stage);
+	}
+
 	std::string persistent_shader_cache::pipeline_archive_metadata_path() const
 	{
 		rsx_log.trace("rsx::metal::persistent_shader_cache::pipeline_archive_metadata_path()");
 		return m_pipeline_archive_file_path + ".txt";
+	}
+
+	std::string persistent_shader_cache::pipeline_state_metadata_path(const char* pipeline_type, u64 pipeline_hash) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::pipeline_state_metadata_path(pipeline_type=%s, pipeline_hash=0x%llx)",
+			pipeline_type ? pipeline_type : "<null>", pipeline_hash);
+
+		if (!pipeline_type || !is_pipeline_state_type(pipeline_type))
+		{
+			fmt::throw_exception("Metal pipeline state metadata requires a valid pipeline type");
+		}
+
+		if (!pipeline_hash)
+		{
+			fmt::throw_exception("Metal pipeline state metadata requires a non-zero pipeline hash");
+		}
+
+		return m_pipeline_path + fmt::format("%llX.%s.pipeline.txt", pipeline_hash, pipeline_type);
 	}
 
 	u32 persistent_shader_cache::count_shader_source_metadata() const
@@ -1534,17 +3049,71 @@ namespace rsx::metal
 		return count;
 	}
 
-	u32 persistent_shader_cache::count_pipeline_entry_metadata() const
+	void persistent_shader_cache::count_shader_completion_metadata(
+		u32& total_entries,
+		u32& available_entries,
+		u32& gated_entries) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::count_shader_completion_metadata(path=%s)", m_completion_path);
+
+		total_entries = 0;
+		available_entries = 0;
+		gated_entries = 0;
+
+		fs::dir dir(m_completion_path);
+		if (!dir)
+		{
+			return;
+		}
+
+		for (const fs::dir_entry& entry : dir)
+		{
+			if (entry.is_directory || !std::string_view(entry.name).ends_with(".complete.txt"))
+			{
+				continue;
+			}
+
+			const std::string path = m_completion_path + entry.name;
+
+			if (is_valid_shader_completion_metadata(path, m_version))
+			{
+				const shader_completion_metadata metadata = load_shader_completion_metadata(path);
+				total_entries++;
+
+				if (metadata.pipeline_entry_available)
+				{
+					available_entries++;
+				}
+				else
+				{
+					gated_entries++;
+				}
+			}
+			else
+			{
+				rsx_log.warning("Ignoring invalid Metal shader completion metadata '%s'", path);
+			}
+		}
+	}
+
+	void persistent_shader_cache::count_pipeline_entry_metadata(
+		u32& total_entries,
+		u32& available_entries,
+		u32& gated_entries,
+		u32& mesh_entries) const
 	{
 		rsx_log.trace("rsx::metal::persistent_shader_cache::count_pipeline_entry_metadata(path=%s)", m_pipeline_path);
+
+		total_entries = 0;
+		available_entries = 0;
+		gated_entries = 0;
+		mesh_entries = 0;
 
 		fs::dir dir(m_pipeline_path);
 		if (!dir)
 		{
-			return 0;
+			return;
 		}
-
-		u32 count = 0;
 
 		for (const fs::dir_entry& entry : dir)
 		{
@@ -1557,11 +3126,58 @@ namespace rsx::metal
 
 			if (is_valid_pipeline_entry_metadata(path, m_version))
 			{
-				count++;
+				const pipeline_entry_metadata metadata = load_pipeline_entry_metadata(path);
+				total_entries++;
+
+				if (metadata.entry_available)
+				{
+					available_entries++;
+				}
+				else
+				{
+					gated_entries++;
+				}
+
+				if (metadata.stage == "mesh")
+				{
+					mesh_entries++;
+				}
 			}
 			else
 			{
 				rsx_log.warning("Ignoring invalid Metal pipeline entry metadata '%s'", path);
+			}
+		}
+	}
+
+	u32 persistent_shader_cache::count_shader_translation_failure_metadata() const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::count_shader_translation_failure_metadata(path=%s)", m_raw_shader_path);
+
+		fs::dir dir(m_raw_shader_path);
+		if (!dir)
+		{
+			return 0;
+		}
+
+		u32 count = 0;
+
+		for (const fs::dir_entry& entry : dir)
+		{
+			if (entry.is_directory || !std::string_view(entry.name).ends_with(".failure.txt"))
+			{
+				continue;
+			}
+
+			const std::string path = m_raw_shader_path + entry.name;
+
+			if (is_valid_shader_translation_failure_metadata(path, m_version))
+			{
+				count++;
+			}
+			else
+			{
+				rsx_log.warning("Ignoring invalid Metal shader translation failure metadata '%s'", path);
 			}
 		}
 
@@ -1621,6 +3237,47 @@ namespace rsx::metal
 		return 0;
 	}
 
+	void persistent_shader_cache::count_pipeline_state_metadata(
+		u32& total_entries,
+		u32& mesh_entries) const
+	{
+		rsx_log.trace("rsx::metal::persistent_shader_cache::count_pipeline_state_metadata(path=%s)", m_pipeline_path);
+
+		total_entries = 0;
+		mesh_entries = 0;
+
+		fs::dir dir(m_pipeline_path);
+		if (!dir)
+		{
+			return;
+		}
+
+		for (const fs::dir_entry& entry : dir)
+		{
+			if (entry.is_directory || !std::string_view(entry.name).ends_with(".pipeline.txt"))
+			{
+				continue;
+			}
+
+			const std::string path = m_pipeline_path + entry.name;
+
+			if (is_valid_pipeline_state_metadata(path, m_version))
+			{
+				const pipeline_state_metadata metadata = load_pipeline_state_metadata(path);
+				total_entries++;
+
+				if (metadata.pipeline_type == "mesh")
+				{
+					mesh_entries++;
+				}
+			}
+			else
+			{
+				rsx_log.warning("Ignoring invalid Metal pipeline state metadata '%s'", path);
+			}
+		}
+	}
+
 	void persistent_shader_cache::refresh_stats()
 	{
 		rsx_log.trace("rsx::metal::persistent_shader_cache::refresh_stats()");
@@ -1635,7 +3292,19 @@ namespace rsx::metal
 
 		m_stats.available = true;
 		m_stats.shader_entries = shader_source_entries;
-		m_stats.pipeline_entries = count_pipeline_entry_metadata();
+		m_stats.translation_failure_entries = count_shader_translation_failure_metadata();
+		count_shader_completion_metadata(
+			m_stats.completion_entries,
+			m_stats.completion_available_entries,
+			m_stats.completion_gated_entries);
+		count_pipeline_entry_metadata(
+			m_stats.pipeline_entries,
+			m_stats.pipeline_entry_available_entries,
+			m_stats.pipeline_entry_gated_entries,
+			m_stats.mesh_pipeline_entry_entries);
+		count_pipeline_state_metadata(
+			m_stats.pipeline_state_entries,
+			m_stats.mesh_pipeline_state_entries);
 		m_stats.library_entries = count_shader_library_metadata();
 		m_stats.archive_entries = count_pipeline_archive_metadata();
 	}

@@ -8,6 +8,7 @@
 namespace rsx::metal
 {
 	class device;
+	struct heap_resource_usage;
 
 	enum class buffer_storage : u8
 	{
@@ -33,7 +34,7 @@ namespace rsx::metal
 		std::string label;
 		buffer_storage storage = buffer_storage::private_;
 		buffer_cpu_cache_mode cpu_cache = buffer_cpu_cache_mode::default_;
-		resource_hazard_tracking hazard_tracking = resource_hazard_tracking::tracked;
+		resource_hazard_tracking hazard_tracking = resource_hazard_tracking::untracked;
 	};
 
 	class buffer
@@ -47,6 +48,7 @@ namespace rsx::metal
 
 		void* handle() const;
 		void* allocation_handle() const;
+		heap_resource_usage heap_resource_usage_info() const;
 		u64 length() const;
 		u64 allocated_size() const;
 		u64 gpu_address() const;

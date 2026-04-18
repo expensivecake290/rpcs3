@@ -91,22 +91,10 @@ namespace rsx::metal
 		}
 
 		texture drawable_texture((__bridge void*)drawable.texture);
-		frame.track_resident_allocation(m_impl->m_device, drawable_texture.handle());
+		frame.track_resident_allocation(m_impl->m_device, drawable_texture.allocation_handle());
 
-		const resource_barrier barrier = frame.track_resource_usage(resource_usage
-		{
-			.resource_id = drawable_texture.resource_id(),
-			.stage = resource_stage::render,
-			.access = resource_access::write,
-			.scope = resource_barrier_scope::render_targets
-		});
-
-		if (barrier.required)
-		{
-			fmt::throw_exception("Metal presentation clear encountered an unencoded drawable write hazard");
-		}
-
-		drawable_render_target render_target(drawable_texture,
+		drawable_render_target render_target(frame,
+			drawable_texture,
 			drawable_texture.width(),
 			drawable_texture.height(),
 			{ red, green, blue, alpha });
@@ -120,8 +108,9 @@ namespace rsx::metal
 			fmt::throw_exception("Metal failed to create render command encoder for presentation clear");
 		}
 
-		encode_consumer_barrier((__bridge void*)encoder, barrier);
+		encode_consumer_barrier((__bridge void*)encoder, render_target.color_barrier());
 		[encoder endEncoding];
+		frame.track_present_boundary(drawable_texture.resource_id());
 		frame.end();
 		queue.submit_frame(frame, (__bridge void*)drawable);
 	}

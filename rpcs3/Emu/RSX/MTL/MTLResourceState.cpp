@@ -49,7 +49,15 @@ namespace rsx::metal
 	{
 		std::unordered_map<u64, resource_state> m_resources;
 		u32 m_frame_index = 0;
+		u32 m_usage_count = 0;
+		u32 m_read_usage_count = 0;
+		u32 m_write_usage_count = 0;
 		u32 m_barrier_count = 0;
+		u32 m_read_after_write_barrier_count = 0;
+		u32 m_write_after_read_barrier_count = 0;
+		u32 m_write_after_write_barrier_count = 0;
+		u32 m_cross_stage_barrier_count = 0;
+		u32 m_present_boundary_count = 0;
 	};
 
 	const char* describe_resource_access(resource_access access)
@@ -116,11 +124,30 @@ namespace rsx::metal
 
 	void resource_state_tracker::reset()
 	{
-		rsx_log.trace("rsx::metal::resource_state_tracker::reset(frame_index=%u, tracked_resources=%u, barriers=%u)",
-			m_impl->m_frame_index, tracked_resource_count(), m_impl->m_barrier_count);
+		const resource_state_stats previous_stats = stats();
+		rsx_log.trace("rsx::metal::resource_state_tracker::reset(frame_index=%u, tracked_resources=%u, usages=%u, reads=%u, writes=%u, barriers=%u, raw=%u, war=%u, waw=%u, cross_stage=%u, present_boundaries=%u)",
+			m_impl->m_frame_index,
+			previous_stats.tracked_resources,
+			previous_stats.usage_count,
+			previous_stats.read_usage_count,
+			previous_stats.write_usage_count,
+			previous_stats.barrier_count,
+			previous_stats.read_after_write_barrier_count,
+			previous_stats.write_after_read_barrier_count,
+			previous_stats.write_after_write_barrier_count,
+			previous_stats.cross_stage_barrier_count,
+			previous_stats.present_boundary_count);
 
 		m_impl->m_resources.clear();
+		m_impl->m_usage_count = 0;
+		m_impl->m_read_usage_count = 0;
+		m_impl->m_write_usage_count = 0;
 		m_impl->m_barrier_count = 0;
+		m_impl->m_read_after_write_barrier_count = 0;
+		m_impl->m_write_after_read_barrier_count = 0;
+		m_impl->m_write_after_write_barrier_count = 0;
+		m_impl->m_cross_stage_barrier_count = 0;
+		m_impl->m_present_boundary_count = 0;
 	}
 
 	resource_barrier resource_state_tracker::record_usage(const resource_usage& usage)
@@ -135,6 +162,16 @@ namespace rsx::metal
 		if (usage.resource_id == 0)
 		{
 			fmt::throw_exception("Metal resource usage tracking requires a non-zero GPU resource id");
+		}
+
+		m_impl->m_usage_count++;
+		if (usage.access == resource_access::write)
+		{
+			m_impl->m_write_usage_count++;
+		}
+		else
+		{
+			m_impl->m_read_usage_count++;
 		}
 
 		const auto found = m_impl->m_resources.find(usage.resource_id);
@@ -155,6 +192,8 @@ namespace rsx::metal
 			.resource_id = usage.resource_id,
 			.after_stage = found->second.m_stage,
 			.before_stage = usage.stage,
+			.after_access = found->second.m_access,
+			.before_access = usage.access,
 			.scope = merge_barrier_scope(found->second.m_scope, usage.scope),
 			.required = requires_barrier(found->second.m_access, usage.access)
 		};
@@ -169,14 +208,99 @@ namespace rsx::metal
 		if (barrier.required)
 		{
 			m_impl->m_barrier_count++;
-			rsx_log.trace("Metal resource barrier required for resource_id=0x%x after=%s before=%s scope=%s",
+
+			if (barrier.after_access == resource_access::write && barrier.before_access == resource_access::read)
+			{
+				m_impl->m_read_after_write_barrier_count++;
+			}
+			else if (barrier.after_access == resource_access::read && barrier.before_access == resource_access::write)
+			{
+				m_impl->m_write_after_read_barrier_count++;
+			}
+			else if (barrier.after_access == resource_access::write && barrier.before_access == resource_access::write)
+			{
+				m_impl->m_write_after_write_barrier_count++;
+			}
+
+			if (barrier.after_stage != barrier.before_stage)
+			{
+				m_impl->m_cross_stage_barrier_count++;
+			}
+
+			rsx_log.trace("Metal resource barrier required for resource_id=0x%x after=%s/%s before=%s/%s scope=%s",
 				barrier.resource_id,
 				describe_resource_stage(barrier.after_stage),
+				describe_resource_access(barrier.after_access),
 				describe_resource_stage(barrier.before_stage),
+				describe_resource_access(barrier.before_access),
 				describe_resource_barrier_scope(barrier.scope));
 		}
 
 		return barrier;
+	}
+
+	void resource_state_tracker::record_present_boundary(u64 resource_id)
+	{
+		rsx_log.trace("rsx::metal::resource_state_tracker::record_present_boundary(frame_index=%u, resource_id=0x%x)",
+			m_impl->m_frame_index,
+			resource_id);
+
+		if (resource_id == 0)
+		{
+			fmt::throw_exception("Metal present boundary tracking requires a non-zero GPU resource id");
+		}
+
+		const auto found = m_impl->m_resources.find(resource_id);
+		if (found == m_impl->m_resources.end())
+		{
+			fmt::throw_exception("Metal present boundary for resource_id=0x%x was recorded before render target usage", resource_id);
+		}
+
+		if (found->second.m_stage == resource_stage::present)
+		{
+			rsx_log.trace("Metal present boundary for resource_id=0x%x was already recorded", resource_id);
+			return;
+		}
+
+		if (found->second.m_access != resource_access::write)
+		{
+			rsx_log.warning("Metal present boundary for resource_id=0x%x follows %s/%s usage instead of a render write",
+				resource_id,
+				describe_resource_stage(found->second.m_stage),
+				describe_resource_access(found->second.m_access));
+		}
+
+		m_impl->m_present_boundary_count++;
+		rsx_log.trace("Metal present boundary tracked for resource_id=0x%x after=%s/%s before=present/read",
+			resource_id,
+			describe_resource_stage(found->second.m_stage),
+			describe_resource_access(found->second.m_access));
+
+		found->second = resource_state
+		{
+			.m_stage = resource_stage::present,
+			.m_access = resource_access::read,
+			.m_scope = resource_barrier_scope::render_targets
+		};
+	}
+
+	resource_state_stats resource_state_tracker::stats() const
+	{
+		rsx_log.trace("rsx::metal::resource_state_tracker::stats(frame_index=%u)", m_impl->m_frame_index);
+
+		return resource_state_stats
+		{
+			.tracked_resources = tracked_resource_count(),
+			.usage_count = m_impl->m_usage_count,
+			.read_usage_count = m_impl->m_read_usage_count,
+			.write_usage_count = m_impl->m_write_usage_count,
+			.barrier_count = m_impl->m_barrier_count,
+			.read_after_write_barrier_count = m_impl->m_read_after_write_barrier_count,
+			.write_after_read_barrier_count = m_impl->m_write_after_read_barrier_count,
+			.write_after_write_barrier_count = m_impl->m_write_after_write_barrier_count,
+			.cross_stage_barrier_count = m_impl->m_cross_stage_barrier_count,
+			.present_boundary_count = m_impl->m_present_boundary_count,
+		};
 	}
 
 	u32 resource_state_tracker::tracked_resource_count() const

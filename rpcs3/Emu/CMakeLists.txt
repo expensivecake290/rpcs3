@@ -661,6 +661,7 @@ if(APPLE AND USE_METAL)
             RSX/MTL/MTLCommandBuffer.mm
             RSX/MTL/MTLCommandQueue.mm
             RSX/MTL/MTLDevice.mm
+            RSX/MTL/MTLHeap.mm
             RSX/MTL/MTLLifetime.mm
             RSX/MTL/MTLNativeWindow.mm
             RSX/MTL/MTLPipelineCache.mm

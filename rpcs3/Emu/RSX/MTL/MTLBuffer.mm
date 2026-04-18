@@ -9,11 +9,6 @@
 
 namespace
 {
-	NSString* make_ns_string(const std::string& value)
-	{
-		return [NSString stringWithUTF8String:value.c_str()];
-	}
-
 	MTLResourceOptions make_buffer_options(rsx::metal::buffer_storage storage, rsx::metal::buffer_cpu_cache_mode cpu_cache, rsx::metal::resource_hazard_tracking hazard_tracking)
 	{
 		rsx_log.trace("make_buffer_options(storage=%u, cpu_cache=%u, hazard_tracking=%u)",
@@ -61,8 +56,10 @@ namespace rsx::metal
 	{
 		device* m_device = nullptr;
 		id<MTLBuffer> m_buffer = nil;
+		void* m_residency_allocation_handle = nullptr;
 		buffer_desc m_desc{};
 		b8 m_resident = false;
+		b8 m_heap_backed = false;
 	};
 
 	buffer::buffer(device& dev, buffer_desc desc)
@@ -78,29 +75,26 @@ namespace rsx::metal
 
 		if (@available(macOS 26.0, *))
 		{
-			id<MTLDevice> metal_device = (__bridge id<MTLDevice>)dev.handle();
-			if (!metal_device)
-			{
-				fmt::throw_exception("Metal buffer requires a valid device");
-			}
-
 			const MTLResourceOptions options = make_buffer_options(desc.storage, desc.cpu_cache, desc.hazard_tracking);
-			m_impl->m_buffer = [metal_device newBufferWithLength:static_cast<NSUInteger>(desc.size) options:options];
+			const device_buffer_allocation allocation = dev.create_buffer_allocation(desc.size, static_cast<u64>(options), desc.label);
+
+			m_impl->m_buffer = (__bridge_transfer id<MTLBuffer>)allocation.buffer_handle;
 			if (!m_impl->m_buffer)
 			{
 				fmt::throw_exception("Metal buffer allocation failed for size=0x%llx", desc.size);
 			}
 
-			if (!desc.label.empty())
-			{
-				m_impl->m_buffer.label = make_ns_string(desc.label);
-			}
-
 			m_impl->m_device = &dev;
+			m_impl->m_residency_allocation_handle = allocation.residency_allocation_handle;
+			m_impl->m_heap_backed = allocation.heap_backed;
 			m_impl->m_desc = std::move(desc);
-			m_impl->m_device->add_resident_allocation((__bridge void*)m_impl->m_buffer);
-			m_impl->m_device->commit_residency();
-			m_impl->m_resident = true;
+
+			if (m_impl->m_residency_allocation_handle)
+			{
+				m_impl->m_device->add_resident_allocation(m_impl->m_residency_allocation_handle);
+				m_impl->m_device->commit_residency();
+				m_impl->m_resident = true;
+			}
 		}
 		else
 		{
@@ -112,9 +106,14 @@ namespace rsx::metal
 	{
 		rsx_log.notice("rsx::metal::buffer::~buffer(buffer=*0x%x)", handle());
 
-		if (m_impl && m_impl->m_device && m_impl->m_buffer && m_impl->m_resident)
+		if (m_impl && m_impl->m_device && m_impl->m_buffer && m_impl->m_heap_backed)
 		{
-			m_impl->m_device->remove_resident_allocation((__bridge void*)m_impl->m_buffer);
+			m_impl->m_device->retire_heap_resource((__bridge void*)m_impl->m_buffer);
+		}
+
+		if (m_impl && m_impl->m_device && m_impl->m_residency_allocation_handle && m_impl->m_resident)
+		{
+			m_impl->m_device->remove_resident_allocation(m_impl->m_residency_allocation_handle);
 			m_impl->m_device->commit_residency();
 			m_impl->m_resident = false;
 		}
@@ -129,7 +128,23 @@ namespace rsx::metal
 	void* buffer::allocation_handle() const
 	{
 		rsx_log.trace("rsx::metal::buffer::allocation_handle()");
-		return (__bridge void*)m_impl->m_buffer;
+		return m_impl->m_residency_allocation_handle ? m_impl->m_residency_allocation_handle : (__bridge void*)m_impl->m_buffer;
+	}
+
+	heap_resource_usage buffer::heap_resource_usage_info() const
+	{
+		rsx_log.trace("rsx::metal::buffer::heap_resource_usage_info()");
+
+		if (!m_impl->m_heap_backed)
+		{
+			return {};
+		}
+
+		return
+		{
+			.metal_device = m_impl->m_device,
+			.resource_handle = (__bridge void*)m_impl->m_buffer,
+		};
 	}
 
 	u64 buffer::length() const

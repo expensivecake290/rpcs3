@@ -15,10 +15,12 @@ namespace rsx::metal
 		b8 compiler_ready = false;
 		b8 pipeline_serializer_ready = false;
 		b8 archive_metadata_found = false;
+		b8 archive_metadata_invalid = false;
 		b8 archive_loaded = false;
 		b8 archive_without_metadata = false;
 		b8 archive_load_failed = false;
 		std::string archive_path;
+		std::string archive_metadata_error;
 	};
 
 	class shader_compiler

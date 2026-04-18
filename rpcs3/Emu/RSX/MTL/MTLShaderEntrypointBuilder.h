@@ -20,6 +20,12 @@ namespace rsx::metal
 		b8 available = false;
 	};
 
+	void validate_pipeline_entry_source(
+		shader_stage stage,
+		u64 source_hash,
+		const std::string& entry_point,
+		const std::string& source);
+	void validate_pipeline_entry_build_result(shader_stage stage, const pipeline_entry_build_result& result);
 	pipeline_entry_build_result build_pipeline_entry_source(
 		const translated_shader& shader,
 		const shader_interface_layout& layout,

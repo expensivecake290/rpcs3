@@ -7,6 +7,8 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <vector>
+
 namespace
 {
 	NSString* make_ns_string(const std::string& value)
@@ -32,6 +34,7 @@ namespace rsx::metal
 	struct texture_view_pool::texture_view_pool_impl
 	{
 		id<MTLTextureViewPool> m_pool = nil;
+		std::vector<texture_view_binding> m_views;
 		u32 m_view_count = 0;
 	};
 
@@ -81,16 +84,33 @@ namespace rsx::metal
 		}
 
 		m_impl->m_view_count = view_count;
+		m_impl->m_views.resize(view_count);
 	}
 
 	texture_view_pool::~texture_view_pool()
 	{
-		rsx_log.notice("rsx::metal::texture_view_pool::~texture_view_pool(pool=*0x%x, view_count=%u)",
+		u32 assigned_view_count = 0;
+		for (const texture_view_binding& binding : m_impl->m_views)
+		{
+			if (binding.view_resource_id)
+			{
+				assigned_view_count++;
+			}
+		}
+
+		rsx_log.notice("rsx::metal::texture_view_pool::~texture_view_pool(pool=*0x%x, view_count=%u, assigned=%u)",
 			m_impl ? (__bridge void*)m_impl->m_pool : nullptr,
-			m_impl ? m_impl->m_view_count : 0);
+			m_impl ? m_impl->m_view_count : 0,
+			assigned_view_count);
 	}
 
-	u64 texture_view_pool::set_default_texture_view(u32 index, const texture& tex)
+	void* texture_view_pool::handle() const
+	{
+		rsx_log.trace("rsx::metal::texture_view_pool::handle()");
+		return (__bridge void*)m_impl->m_pool;
+	}
+
+	texture_view_binding texture_view_pool::set_default_texture_view(u32 index, const texture& tex)
 	{
 		rsx_log.trace("rsx::metal::texture_view_pool::set_default_texture_view(index=%u, texture=*0x%x)",
 			index, tex.handle());
@@ -101,16 +121,30 @@ namespace rsx::metal
 				index, m_impl->m_view_count);
 		}
 
+		const u64 source_resource_id = tex.resource_id();
+		if (!source_resource_id)
+		{
+			fmt::throw_exception("Metal texture view pool requires a non-zero source texture resource ID");
+		}
+
 		if (@available(macOS 26.0, *))
 		{
 			id<MTLTexture> metal_texture = (__bridge id<MTLTexture>)tex.handle();
-			const MTLResourceID resource_id = [m_impl->m_pool setTextureView:metal_texture atIndex:index];
-			if (!resource_id._impl)
+			const MTLResourceID view_resource_id = [m_impl->m_pool setTextureView:metal_texture atIndex:index];
+			if (!view_resource_id._impl)
 			{
 				fmt::throw_exception("Metal texture view pool returned a zero resource ID");
 			}
 
-			return resource_id._impl;
+			texture_view_binding binding =
+			{
+				.source_resource_id = source_resource_id,
+				.view_resource_id = view_resource_id._impl,
+				.index = index,
+			};
+
+			m_impl->m_views[index] = binding;
+			return binding;
 		}
 
 		fmt::throw_exception("Metal texture view pool updates require macOS 26.0 or newer");

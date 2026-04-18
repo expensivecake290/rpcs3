@@ -1,11 +1,13 @@
 #pragma once
 
+#include "MTLResourceState.h"
 #include "util/types.hpp"
 
 #include <memory>
 
 namespace rsx::metal
 {
+	class command_frame;
 	class texture;
 
 	struct clear_color
@@ -19,13 +21,14 @@ namespace rsx::metal
 	class drawable_render_target
 	{
 	public:
-		drawable_render_target(texture& color_texture, u32 width, u32 height, clear_color color);
+		drawable_render_target(command_frame& frame, texture& color_texture, u32 width, u32 height, clear_color color);
 		~drawable_render_target();
 
 		drawable_render_target(const drawable_render_target&) = delete;
 		drawable_render_target& operator=(const drawable_render_target&) = delete;
 
 		void* render_pass_descriptor_handle() const;
+		const resource_barrier& color_barrier() const;
 		u32 width() const;
 		u32 height() const;
 

@@ -58,5 +58,7 @@ namespace rsx::metal
 	const std::array<shader_named_slot, shader_fragment_color_output_count>& fragment_color_output_slots();
 	std::string describe_shader_interface_layout(const shader_interface_layout& layout);
 	std::string describe_shader_stage_io_layout(const shader_interface_layout& layout);
+	u32 known_pipeline_entry_requirement_mask();
+	void validate_pipeline_entry_requirement_mask(u32 requirement_mask);
 	std::string describe_pipeline_entry_requirements(u32 requirement_mask);
 }

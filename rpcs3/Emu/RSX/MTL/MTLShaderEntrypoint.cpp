@@ -22,6 +22,8 @@ namespace
 		rsx_log.trace("apply_pipeline_entry_build_result(stage=%u, id=%u, source_hash=0x%llx, requirement_mask=0x%x, available=%u)",
 			static_cast<u32>(shader.stage), shader.id, result.source_hash, result.requirement_mask, static_cast<u32>(result.available));
 
+		rsx::metal::validate_pipeline_entry_build_result(shader.stage, result);
+
 		if (result.available)
 		{
 			if (!result.source_hash || result.entry_point.empty() || result.source.empty() || result.requirement_mask)

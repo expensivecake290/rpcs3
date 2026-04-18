@@ -1,5 +1,6 @@
 #pragma once
 
+#include "MTLResourceState.h"
 #include "util/types.hpp"
 
 #include <memory>
@@ -8,6 +9,7 @@
 namespace rsx::metal
 {
 	class buffer;
+	class command_frame;
 	class device;
 	class sampler;
 	class texture;
@@ -46,15 +48,19 @@ namespace rsx::metal
 		u32 max_samplers() const;
 		b8 supports_attribute_strides() const;
 
-		void bind_buffer_address(u32 index, const buffer& buf, u64 offset = 0);
+		void bind_buffer_address(u32 index, const buffer& buf, u64 offset = 0, resource_access access = resource_access::read);
 		void bind_vertex_buffer_address(u32 index, const buffer& buf, u64 offset, u32 stride);
-		void bind_texture(u32 index, const texture& tex);
+		void bind_texture(u32 index, const texture& tex, resource_access access = resource_access::read);
 		void bind_sampler(u32 index, const sampler& sampler_state);
 
-		void bind_to_render_encoder(void* render_encoder_handle, u32 stages) const;
-		void bind_to_compute_encoder(void* compute_encoder_handle) const;
+		void bind_to_render_encoder(command_frame& frame, void* render_encoder_handle, u32 stages) const;
+		void bind_to_compute_encoder(command_frame& frame, void* compute_encoder_handle) const;
 
 	private:
+		void validate_bound_resource_conflicts(resource_stage stage) const;
+		void track_bound_resources(command_frame& frame, void* encoder_handle, resource_stage stage) const;
+		void retain_bound_table(command_frame& frame) const;
+
 		struct argument_table_impl;
 		std::unique_ptr<argument_table_impl> m_impl;
 	};

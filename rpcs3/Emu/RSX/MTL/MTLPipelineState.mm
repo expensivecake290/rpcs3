@@ -4,8 +4,13 @@
 #include "MTLPipelineCache.h"
 #include "MTLShaderCache.h"
 #include "MTLShaderCompiler.h"
+#include "MTLShaderEntrypointBuilder.h"
 
 #include "Utilities/File.h"
+#include "util/fnv_hash.hpp"
+
+#include <cstring>
+#include <string_view>
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -48,6 +53,179 @@ namespace
 		return make_ns_string(fmt::format("RPCS3 Metal mesh pipeline 0x%llx", desc.pipeline_hash));
 	}
 
+	b8 pipeline_shader_stage_from_name(const char* stage, rsx::metal::shader_stage& shader_stage)
+	{
+		if (std::strcmp(stage, "vertex") == 0)
+		{
+			shader_stage = rsx::metal::shader_stage::vertex;
+			return true;
+		}
+
+		if (std::strcmp(stage, "fragment") == 0)
+		{
+			shader_stage = rsx::metal::shader_stage::fragment;
+			return true;
+		}
+
+		if (std::strcmp(stage, "mesh") == 0)
+		{
+			shader_stage = rsx::metal::shader_stage::mesh;
+			return true;
+		}
+
+		return false;
+	}
+
+	usz append_dependency_u32(usz hash, u32 value)
+	{
+		for (u32 index = 0; index < sizeof(value); index++)
+		{
+			hash = rpcs3::hash64(hash, static_cast<u8>((value >> (index * 8)) & 0xff));
+		}
+
+		return hash;
+	}
+
+	usz append_dependency_u64(usz hash, u64 value)
+	{
+		for (u32 index = 0; index < sizeof(value); index++)
+		{
+			hash = rpcs3::hash64(hash, static_cast<u8>((value >> (index * 8)) & 0xff));
+		}
+
+		return hash;
+	}
+
+	usz append_dependency_string(usz hash, std::string_view value)
+	{
+		hash = append_dependency_u64(hash, value.size());
+
+		for (const char c : value)
+		{
+			hash = rpcs3::hash64(hash, static_cast<u8>(c));
+		}
+
+		return hash;
+	}
+
+	u64 linked_library_dependency_hash(const std::vector<rsx::metal::shader_library_record>& libraries)
+	{
+		rsx_log.trace("linked_library_dependency_hash(count=%u)", static_cast<u32>(libraries.size()));
+
+		if (libraries.empty())
+		{
+			return 0;
+		}
+
+		usz hash = append_dependency_u32(rpcs3::fnv_seed, static_cast<u32>(libraries.size()));
+
+		for (const rsx::metal::shader_library_record& library : libraries)
+		{
+			rsx::metal::validate_shader_library_record(library, false);
+
+			hash = append_dependency_u32(hash, static_cast<u32>(library.stage));
+			hash = append_dependency_u32(hash, library.id);
+			hash = append_dependency_u64(hash, library.source_hash);
+			hash = append_dependency_u64(hash, library.source_text_hash);
+			hash = append_dependency_string(hash, library.entry_point);
+			hash = append_dependency_string(hash, library.dynamic_library_path);
+			hash = append_dependency_u32(hash, library.pipeline_requirement_mask);
+			hash = append_dependency_u32(hash, static_cast<u32>(library.pipeline_entry_available));
+		}
+
+		return static_cast<u64>(hash);
+	}
+
+	b8 pipeline_state_metadata_matches(
+		const rsx::metal::pipeline_state_metadata& metadata,
+		const char* pipeline_type,
+		u64 pipeline_hash,
+		u64 vertex_source_hash,
+		u64 fragment_source_hash,
+		u64 object_source_hash,
+		u64 mesh_source_hash,
+		u64 linked_library_hash,
+		u32 linked_library_count,
+		u32 color_pixel_format,
+		u32 raster_sample_count,
+		b8 rasterization_enabled)
+	{
+		rsx_log.trace("pipeline_state_metadata_matches(pipeline_type=%s, pipeline_hash=0x%llx)", pipeline_type, pipeline_hash);
+
+		return metadata.pipeline_type == pipeline_type &&
+			metadata.pipeline_hash == pipeline_hash &&
+			metadata.vertex_source_hash == vertex_source_hash &&
+			metadata.fragment_source_hash == fragment_source_hash &&
+			metadata.object_source_hash == object_source_hash &&
+			metadata.mesh_source_hash == mesh_source_hash &&
+			metadata.linked_library_hash == linked_library_hash &&
+			metadata.linked_library_count == linked_library_count &&
+			metadata.color_pixel_format == color_pixel_format &&
+			metadata.raster_sample_count == raster_sample_count &&
+			metadata.rasterization_enabled == rasterization_enabled;
+	}
+
+	void probe_pipeline_state_metadata(
+		rsx::metal::persistent_shader_cache& cache,
+		const char* pipeline_type,
+		u64 pipeline_hash,
+		u64 vertex_source_hash,
+		u64 fragment_source_hash,
+		u64 object_source_hash,
+		u64 mesh_source_hash,
+		u64 linked_library_hash,
+		u32 linked_library_count,
+		u32 color_pixel_format,
+		u32 raster_sample_count,
+		b8 rasterization_enabled,
+		u32& hit_count,
+		u32& miss_count,
+		u32& mismatch_count,
+		u32& invalid_count)
+	{
+		rsx_log.trace("probe_pipeline_state_metadata(pipeline_type=%s, pipeline_hash=0x%llx)", pipeline_type, pipeline_hash);
+
+		rsx::metal::pipeline_state_metadata metadata;
+		std::string error;
+		if (!cache.try_find_pipeline_state_metadata(pipeline_type, pipeline_hash, metadata, error))
+		{
+			if (error.empty())
+			{
+				miss_count++;
+				rsx_log.trace("Metal %s pipeline metadata miss for pipeline=0x%llx", pipeline_type, pipeline_hash);
+			}
+			else
+			{
+				invalid_count++;
+				rsx_log.warning("Metal %s pipeline metadata is invalid for pipeline=0x%llx: %s", pipeline_type, pipeline_hash, error.c_str());
+			}
+
+			return;
+		}
+
+		if (pipeline_state_metadata_matches(
+			metadata,
+			pipeline_type,
+			pipeline_hash,
+			vertex_source_hash,
+			fragment_source_hash,
+			object_source_hash,
+			mesh_source_hash,
+			linked_library_hash,
+			linked_library_count,
+			color_pixel_format,
+			raster_sample_count,
+			rasterization_enabled))
+		{
+			hit_count++;
+			rsx_log.trace("Metal %s pipeline metadata hit for pipeline=0x%llx", pipeline_type, pipeline_hash);
+			return;
+		}
+
+		mismatch_count++;
+		rsx_log.warning("Metal %s pipeline metadata mismatch for pipeline=0x%llx; pipeline will be recompiled", pipeline_type, pipeline_hash);
+	}
+
 	void validate_shader_source(const char* stage, const rsx::metal::render_pipeline_shader& shader)
 	{
 		if (!shader.entry_available)
@@ -58,6 +236,16 @@ namespace
 			}
 
 			fmt::throw_exception("Metal %s pipeline shader was not validated as a real pipeline entry", stage);
+		}
+
+		if (shader.requirement_mask)
+		{
+			fmt::throw_exception("Metal %s pipeline shader is marked available with unsatisfied requirements: 0x%x", stage, shader.requirement_mask);
+		}
+
+		if (!shader.entry_error.empty())
+		{
+			fmt::throw_exception("Metal %s pipeline shader is marked available with a gated diagnostic: %s", stage, shader.entry_error.c_str());
 		}
 
 		if (!shader.source_hash)
@@ -74,6 +262,15 @@ namespace
 		{
 			fmt::throw_exception("Metal %s pipeline shader requires an entry point", stage);
 		}
+
+		rsx::metal::shader_stage shader_stage = rsx::metal::shader_stage::vertex;
+		if (pipeline_shader_stage_from_name(stage, shader_stage))
+		{
+			rsx::metal::validate_pipeline_entry_source(shader_stage, shader.source_hash, shader.entry_point, shader.source);
+			return;
+		}
+
+		rsx_log.warning("Metal %s pipeline shader source validation is limited because the stage is not an RSX shader stage", stage);
 	}
 
 	b8 has_shader_source(const rsx::metal::render_pipeline_shader& shader)
@@ -107,12 +304,10 @@ namespace
 
 		for (const rsx::metal::shader_library_record& library : libraries)
 		{
-			id<MTLDynamicLibrary> dynamic_library = (__bridge id<MTLDynamicLibrary>)library.dynamic_library_handle;
-			if (!dynamic_library)
-			{
-				fmt::throw_exception("Metal pipeline dependency '%s' is missing a dynamic library handle", library.dynamic_library_path.c_str());
-			}
+			rsx::metal::validate_shader_library_record(library, true);
+			rsx_log.trace("Metal linked shader library: %s", rsx::metal::describe_shader_library_record(library).c_str());
 
+			id<MTLDynamicLibrary> dynamic_library = (__bridge id<MTLDynamicLibrary>)library.dynamic_library_handle;
 			[linked_libraries addObject:dynamic_library];
 		}
 
@@ -219,6 +414,14 @@ namespace rsx::metal
 		u32 m_mesh_cache_hits = 0;
 		u32 m_pipeline_compile_failures = 0;
 		u32 m_mesh_pipeline_compile_failures = 0;
+		u32 m_render_metadata_hits = 0;
+		u32 m_render_metadata_misses = 0;
+		u32 m_render_metadata_mismatches = 0;
+		u32 m_render_metadata_invalid = 0;
+		u32 m_mesh_metadata_hits = 0;
+		u32 m_mesh_metadata_misses = 0;
+		u32 m_mesh_metadata_mismatches = 0;
+		u32 m_mesh_metadata_invalid = 0;
 
 		render_pipeline_cache_impl(shader_compiler& compiler, persistent_shader_cache& cache, pipeline_cache& pipelines)
 			: m_compiler(compiler)
@@ -275,7 +478,7 @@ namespace rsx::metal
 		{
 			validate_shader_source("fragment", desc.fragment);
 		}
-		else if (!desc.fragment.source.empty() || !desc.fragment.entry_point.empty() || desc.fragment.source_hash)
+		else if (has_shader_source(desc.fragment))
 		{
 			fmt::throw_exception("Metal rasterization-disabled pipeline must not provide a fragment shader");
 		}
@@ -304,6 +507,24 @@ namespace rsx::metal
 
 			id<MTL4Compiler> compiler = (__bridge id<MTL4Compiler>)m_impl->m_compiler.compiler_handle();
 			MTL4CompilerTaskOptions* task_options = (__bridge MTL4CompilerTaskOptions*)m_impl->m_compiler.task_options_handle();
+			const u64 library_dependency_hash = linked_library_dependency_hash(desc.linked_libraries);
+			probe_pipeline_state_metadata(
+				m_impl->m_cache,
+				"render",
+				desc.pipeline_hash,
+				desc.vertex.source_hash,
+				desc.rasterization_enabled ? desc.fragment.source_hash : 0,
+				0,
+				0,
+				library_dependency_hash,
+				static_cast<u32>(desc.linked_libraries.size()),
+				desc.color_pixel_format,
+				desc.raster_sample_count,
+				desc.rasterization_enabled,
+				m_impl->m_render_metadata_hits,
+				m_impl->m_render_metadata_misses,
+				m_impl->m_render_metadata_mismatches,
+				m_impl->m_render_metadata_invalid);
 			NSArray<id<MTLDynamicLibrary>>* linked_libraries = make_linked_libraries(desc.linked_libraries);
 
 			id<MTLLibrary> vertex_library = compile_executable_library(compiler, "vertex", desc.vertex, linked_libraries);
@@ -354,6 +575,18 @@ namespace rsx::metal
 
 			[m_impl->m_render_pipelines setObject:pipeline forKey:key];
 			m_impl->m_compiled_pipelines++;
+			m_impl->m_cache.store_pipeline_state_metadata(
+				"render",
+				desc.pipeline_hash,
+				desc.vertex.source_hash,
+				desc.rasterization_enabled ? desc.fragment.source_hash : 0,
+				0,
+				0,
+				library_dependency_hash,
+				static_cast<u32>(desc.linked_libraries.size()),
+				desc.color_pixel_format,
+				desc.raster_sample_count,
+				desc.rasterization_enabled);
 			m_impl->m_pipeline_cache.record_pipeline_compilation();
 
 			return
@@ -433,6 +666,24 @@ namespace rsx::metal
 
 			id<MTL4Compiler> compiler = (__bridge id<MTL4Compiler>)m_impl->m_compiler.compiler_handle();
 			MTL4CompilerTaskOptions* task_options = (__bridge MTL4CompilerTaskOptions*)m_impl->m_compiler.task_options_handle();
+			const u64 library_dependency_hash = linked_library_dependency_hash(desc.linked_libraries);
+			probe_pipeline_state_metadata(
+				m_impl->m_cache,
+				"mesh",
+				desc.pipeline_hash,
+				0,
+				desc.rasterization_enabled ? desc.fragment.source_hash : 0,
+				has_object_stage ? desc.object.source_hash : 0,
+				desc.mesh.source_hash,
+				library_dependency_hash,
+				static_cast<u32>(desc.linked_libraries.size()),
+				desc.color_pixel_format,
+				desc.raster_sample_count,
+				desc.rasterization_enabled,
+				m_impl->m_mesh_metadata_hits,
+				m_impl->m_mesh_metadata_misses,
+				m_impl->m_mesh_metadata_mismatches,
+				m_impl->m_mesh_metadata_invalid);
 			NSArray<id<MTLDynamicLibrary>>* linked_libraries = make_linked_libraries(desc.linked_libraries);
 
 			id<MTLLibrary> object_library = nil;
@@ -502,6 +753,18 @@ namespace rsx::metal
 
 			[m_impl->m_mesh_pipelines setObject:pipeline forKey:key];
 			m_impl->m_compiled_mesh_pipelines++;
+			m_impl->m_cache.store_pipeline_state_metadata(
+				"mesh",
+				desc.pipeline_hash,
+				0,
+				desc.rasterization_enabled ? desc.fragment.source_hash : 0,
+				has_object_stage ? desc.object.source_hash : 0,
+				desc.mesh.source_hash,
+				library_dependency_hash,
+				static_cast<u32>(desc.linked_libraries.size()),
+				desc.color_pixel_format,
+				desc.raster_sample_count,
+				desc.rasterization_enabled);
 			m_impl->m_pipeline_cache.record_pipeline_compilation();
 
 			return
@@ -525,10 +788,18 @@ namespace rsx::metal
 			.render_pipeline_cache_hit_count = m_impl->m_cache_hits,
 			.retained_render_pipeline_count = static_cast<u32>(m_impl->m_render_pipelines.count),
 			.render_pipeline_compile_failure_count = m_impl->m_pipeline_compile_failures,
+			.render_pipeline_metadata_hit_count = m_impl->m_render_metadata_hits,
+			.render_pipeline_metadata_miss_count = m_impl->m_render_metadata_misses,
+			.render_pipeline_metadata_mismatch_count = m_impl->m_render_metadata_mismatches,
+			.render_pipeline_metadata_invalid_count = m_impl->m_render_metadata_invalid,
 			.compiled_mesh_pipeline_count = m_impl->m_compiled_mesh_pipelines,
 			.mesh_pipeline_cache_hit_count = m_impl->m_mesh_cache_hits,
 			.retained_mesh_pipeline_count = static_cast<u32>(m_impl->m_mesh_pipelines.count),
 			.mesh_pipeline_compile_failure_count = m_impl->m_mesh_pipeline_compile_failures,
+			.mesh_pipeline_metadata_hit_count = m_impl->m_mesh_metadata_hits,
+			.mesh_pipeline_metadata_miss_count = m_impl->m_mesh_metadata_misses,
+			.mesh_pipeline_metadata_mismatch_count = m_impl->m_mesh_metadata_mismatches,
+			.mesh_pipeline_metadata_invalid_count = m_impl->m_mesh_metadata_invalid,
 		};
 	}
 
@@ -544,6 +815,16 @@ namespace rsx::metal
 			pipeline_stats.compiled_mesh_pipeline_count,
 			pipeline_stats.mesh_pipeline_cache_hit_count,
 			pipeline_stats.retained_mesh_pipeline_count);
+		rsx_log.notice("Metal render pipeline metadata: hits=%u, misses=%u, mismatches=%u, invalid=%u",
+			pipeline_stats.render_pipeline_metadata_hit_count,
+			pipeline_stats.render_pipeline_metadata_miss_count,
+			pipeline_stats.render_pipeline_metadata_mismatch_count,
+			pipeline_stats.render_pipeline_metadata_invalid_count);
+		rsx_log.notice("Metal mesh pipeline metadata: hits=%u, misses=%u, mismatches=%u, invalid=%u",
+			pipeline_stats.mesh_pipeline_metadata_hit_count,
+			pipeline_stats.mesh_pipeline_metadata_miss_count,
+			pipeline_stats.mesh_pipeline_metadata_mismatch_count,
+			pipeline_stats.mesh_pipeline_metadata_invalid_count);
 		rsx_log.notice("Metal pipeline compile failures: render=%u, mesh=%u",
 			pipeline_stats.render_pipeline_compile_failure_count,
 			pipeline_stats.mesh_pipeline_compile_failure_count);

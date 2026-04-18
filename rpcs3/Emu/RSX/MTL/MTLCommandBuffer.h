@@ -30,6 +30,8 @@ namespace rsx::metal
 		void track_object(void* object_handle);
 		void track_resident_allocation(device& metal_device, void* allocation_handle);
 		resource_barrier track_resource_usage(const resource_usage& usage);
+		void track_present_boundary(u64 resource_id);
+		resource_state_stats resource_stats() const;
 		void on_completed(std::function<void()> callback);
 
 		void* command_buffer_handle() const;

@@ -155,6 +155,20 @@ namespace rsx::metal
 
 		ensure(m_impl->m_recording);
 
+		const resource_state_stats stats = resource_stats();
+		rsx_log.trace("Metal command frame resource tracking: frame=%u tracked=%u usages=%u reads=%u writes=%u barriers=%u raw=%u war=%u waw=%u cross_stage=%u present_boundaries=%u",
+			m_impl->m_frame_index,
+			stats.tracked_resources,
+			stats.usage_count,
+			stats.read_usage_count,
+			stats.write_usage_count,
+			stats.barrier_count,
+			stats.read_after_write_barrier_count,
+			stats.write_after_read_barrier_count,
+			stats.write_after_write_barrier_count,
+			stats.cross_stage_barrier_count,
+			stats.present_boundary_count);
+
 		if (@available(macOS 26.0, *))
 		{
 			[m_impl->m_command_buffer endCommandBuffer];
@@ -316,6 +330,23 @@ namespace rsx::metal
 
 		std::lock_guard lock(m_impl->m_mutex);
 		return m_impl->m_resource_state->record_usage(usage);
+	}
+
+	void command_frame::track_present_boundary(u64 resource_id)
+	{
+		rsx_log.trace("rsx::metal::command_frame::track_present_boundary(frame_index=%u, resource_id=0x%x)",
+			m_impl->m_frame_index, resource_id);
+
+		std::lock_guard lock(m_impl->m_mutex);
+		m_impl->m_resource_state->record_present_boundary(resource_id);
+	}
+
+	resource_state_stats command_frame::resource_stats() const
+	{
+		rsx_log.trace("rsx::metal::command_frame::resource_stats(frame_index=%u)", m_impl->m_frame_index);
+
+		std::lock_guard lock(m_impl->m_mutex);
+		return m_impl->m_resource_state->stats();
 	}
 
 	void command_frame::on_completed(std::function<void()> callback)

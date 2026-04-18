@@ -10,6 +10,13 @@ namespace rsx::metal
 	class device;
 	class texture;
 
+	struct texture_view_binding
+	{
+		u64 source_resource_id = 0;
+		u64 view_resource_id = 0;
+		u32 index = 0;
+	};
+
 	class texture_view_pool
 	{
 	public:
@@ -19,7 +26,8 @@ namespace rsx::metal
 		texture_view_pool(const texture_view_pool&) = delete;
 		texture_view_pool& operator=(const texture_view_pool&) = delete;
 
-		u64 set_default_texture_view(u32 index, const texture& tex);
+		void* handle() const;
+		texture_view_binding set_default_texture_view(u32 index, const texture& tex);
 
 	private:
 		struct texture_view_pool_impl;
