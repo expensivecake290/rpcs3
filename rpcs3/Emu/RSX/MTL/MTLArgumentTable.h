@@ -12,6 +12,7 @@ namespace rsx::metal
 	class command_frame;
 	class device;
 	class sampler;
+	struct shader_interface_layout;
 	class texture;
 
 	enum class argument_table_render_stage : u32
@@ -53,13 +54,16 @@ namespace rsx::metal
 		void bind_texture(u32 index, const texture& tex, resource_access access = resource_access::read);
 		void bind_sampler(u32 index, const sampler& sampler_state);
 
+		void validate_shader_bindings(const shader_interface_layout& layout) const;
+		void bind_to_render_encoder(command_frame& frame, void* render_encoder_handle, const shader_interface_layout& layout) const;
 		void bind_to_render_encoder(command_frame& frame, void* render_encoder_handle, u32 stages) const;
 		void bind_to_compute_encoder(command_frame& frame, void* compute_encoder_handle) const;
 
 	private:
+		void validate_shader_bindings_locked(const shader_interface_layout& layout) const;
 		void validate_bound_resource_conflicts(resource_stage stage) const;
 		void track_bound_resources(command_frame& frame, void* encoder_handle, resource_stage stage) const;
-		void retain_bound_table(command_frame& frame) const;
+		void retain_bound_table_locked(command_frame& frame) const;
 
 		struct argument_table_impl;
 		std::unique_ptr<argument_table_impl> m_impl;

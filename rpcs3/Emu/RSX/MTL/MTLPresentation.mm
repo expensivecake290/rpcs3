@@ -91,7 +91,7 @@ namespace rsx::metal
 		}
 
 		texture drawable_texture((__bridge void*)drawable.texture);
-		frame.track_resident_allocation(m_impl->m_device, drawable_texture.allocation_handle());
+		frame.track_object(drawable_texture.handle());
 
 		drawable_render_target render_target(frame,
 			drawable_texture,

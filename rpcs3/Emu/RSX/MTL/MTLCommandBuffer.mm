@@ -2,7 +2,6 @@
 #include "MTLCommandBuffer.h"
 
 #include "MTLCommandAllocator.h"
-#include "MTLDevice.h"
 #include "MTLLifetime.h"
 #include "MTLResourceState.h"
 #include "MTLSynchronization.h"
@@ -21,25 +20,23 @@ namespace
 		return [NSString stringWithFormat:@"%s %u", prefix, frame_index];
 	}
 
-	struct resident_allocation
+	void run_completion_callbacks(std::vector<std::function<void()>> callbacks)
 	{
-		rsx::metal::device* m_device = nullptr;
-		void* m_allocation_handle = nullptr;
-	};
+		rsx_log.trace("run_completion_callbacks(count=%u)", static_cast<u32>(callbacks.size()));
 
-	void release_resident_allocations(std::vector<resident_allocation> allocations)
-	{
-		rsx_log.trace("release_resident_allocations(count=%u)", static_cast<u32>(allocations.size()));
-
-		for (const resident_allocation& allocation : allocations)
+		for (const std::function<void()>& callback : callbacks)
 		{
-			if (!allocation.m_device || !allocation.m_allocation_handle)
-			{
-				continue;
-			}
+			callback();
+		}
+	}
 
-			allocation.m_device->remove_resident_allocation(allocation.m_allocation_handle);
-			allocation.m_device->commit_residency();
+	void validate_frame_recording(b8 recording, const char* operation)
+	{
+		rsx_log.trace("validate_frame_recording(operation=%s, recording=%d)", operation, recording);
+
+		if (!recording)
+		{
+			fmt::throw_exception("Metal command frame cannot %s outside an active recording interval", operation);
 		}
 	}
 }
@@ -55,7 +52,6 @@ namespace rsx::metal
 		std::unique_ptr<resource_state_tracker> m_resource_state;
 		std::vector<void*> m_recorded_command_buffers;
 		std::vector<std::function<void()>> m_completion_callbacks;
-		std::vector<resident_allocation> m_resident_allocations;
 		std::mutex m_mutex;
 		std::condition_variable m_available;
 		u64 m_completion_value = 0;
@@ -98,7 +94,6 @@ namespace rsx::metal
 		m_impl->m_lifetime = std::make_unique<lifetime_tracker>(frame_index);
 		m_impl->m_resource_state = std::make_unique<resource_state_tracker>(frame_index);
 		m_impl->m_recorded_command_buffers.reserve(2);
-		m_impl->m_resident_allocations.reserve(8);
 		m_impl->m_frame_index = frame_index;
 	}
 
@@ -107,13 +102,13 @@ namespace rsx::metal
 		rsx_log.notice("rsx::metal::command_frame::~command_frame(frame_index=%u)", m_impl ? m_impl->m_frame_index : 0);
 		wait_until_available();
 
-		std::vector<resident_allocation> resident_allocations;
+		std::vector<std::function<void()>> callbacks;
 		{
 			std::lock_guard lock(m_impl->m_mutex);
-			resident_allocations = std::move(m_impl->m_resident_allocations);
+			callbacks = std::move(m_impl->m_completion_callbacks);
 		}
 
-		release_resident_allocations(std::move(resident_allocations));
+		run_completion_callbacks(std::move(callbacks));
 	}
 
 	void command_frame::begin()
@@ -122,16 +117,14 @@ namespace rsx::metal
 
 		wait_until_available();
 
-		std::vector<resident_allocation> resident_allocations;
+		std::vector<std::function<void()>> callbacks;
 		{
 			std::lock_guard lock(m_impl->m_mutex);
 			ensure(!m_impl->m_pending);
-			resident_allocations = std::move(m_impl->m_resident_allocations);
-			m_impl->m_resident_allocations.reserve(8);
-			m_impl->m_completion_callbacks.clear();
+			callbacks = std::move(m_impl->m_completion_callbacks);
 		}
 
-		release_resident_allocations(std::move(resident_allocations));
+		run_completion_callbacks(std::move(callbacks));
 
 		if (@available(macOS 26.0, *))
 		{
@@ -230,7 +223,6 @@ namespace rsx::metal
 		rsx_log.trace("rsx::metal::command_frame::mark_completed(frame_index=%u, signal_value=0x%x)", m_impl->m_frame_index, signal_value);
 
 		std::vector<std::function<void()>> callbacks;
-		std::vector<resident_allocation> resident_allocations;
 
 		{
 			std::lock_guard lock(m_impl->m_mutex);
@@ -241,15 +233,9 @@ namespace rsx::metal
 
 			m_impl->m_completing = true;
 			callbacks = std::move(m_impl->m_completion_callbacks);
-			resident_allocations = std::move(m_impl->m_resident_allocations);
 		}
 
-		for (const std::function<void()>& callback : callbacks)
-		{
-			callback();
-		}
-
-		release_resident_allocations(std::move(resident_allocations));
+		run_completion_callbacks(std::move(callbacks));
 
 		{
 			std::lock_guard lock(m_impl->m_mutex);
@@ -257,7 +243,6 @@ namespace rsx::metal
 			m_impl->m_resource_state->reset();
 			m_impl->m_recorded_command_buffers.clear();
 			m_impl->m_completion_callbacks.clear();
-			m_impl->m_resident_allocations.reserve(8);
 			m_impl->m_completion_value = 0;
 			m_impl->m_pending = false;
 			m_impl->m_completing = false;
@@ -270,6 +255,8 @@ namespace rsx::metal
 	{
 		rsx_log.trace("rsx::metal::command_frame::use_residency_set(frame_index=%u, residency_set_handle=*0x%x)",
 			m_impl->m_frame_index, residency_set_handle);
+
+		validate_frame_recording(m_impl->m_recording, "bind a residency set");
 
 		if (!residency_set_handle)
 		{
@@ -298,25 +285,8 @@ namespace rsx::metal
 		}
 
 		std::lock_guard lock(m_impl->m_mutex);
+		validate_frame_recording(m_impl->m_recording, "track an object");
 		m_impl->m_lifetime->track_object(object_handle);
-	}
-
-	void command_frame::track_resident_allocation(device& metal_device, void* allocation_handle)
-	{
-		rsx_log.trace("rsx::metal::command_frame::track_resident_allocation(frame_index=%u, allocation_handle=*0x%x)",
-			m_impl->m_frame_index, allocation_handle);
-
-		if (!allocation_handle)
-		{
-			fmt::throw_exception("Metal command frame resident allocation tracking requires a valid allocation");
-		}
-
-		track_object(allocation_handle);
-		metal_device.add_resident_allocation(allocation_handle);
-		metal_device.commit_residency();
-
-		std::lock_guard lock(m_impl->m_mutex);
-		m_impl->m_resident_allocations.push_back({ &metal_device, allocation_handle });
 	}
 
 	resource_barrier command_frame::track_resource_usage(const resource_usage& usage)
@@ -329,6 +299,7 @@ namespace rsx::metal
 			describe_resource_barrier_scope(usage.scope));
 
 		std::lock_guard lock(m_impl->m_mutex);
+		validate_frame_recording(m_impl->m_recording, "track resource usage");
 		return m_impl->m_resource_state->record_usage(usage);
 	}
 
@@ -338,6 +309,7 @@ namespace rsx::metal
 			m_impl->m_frame_index, resource_id);
 
 		std::lock_guard lock(m_impl->m_mutex);
+		validate_frame_recording(m_impl->m_recording, "track a present boundary");
 		m_impl->m_resource_state->record_present_boundary(resource_id);
 	}
 
@@ -359,6 +331,7 @@ namespace rsx::metal
 		}
 
 		std::lock_guard lock(m_impl->m_mutex);
+		validate_frame_recording(m_impl->m_recording, "register a completion callback");
 		m_impl->m_completion_callbacks.emplace_back(std::move(callback));
 	}
 

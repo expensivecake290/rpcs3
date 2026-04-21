@@ -47,6 +47,9 @@ namespace rsx::metal
 		u32 m_archived_pipeline_count = 0;
 		u64 m_archive_script_size = 0;
 		u64 m_archive_size = 0;
+		u64 m_archive_script_hash = 0;
+		u64 m_archive_hash = 0;
+		u32 m_archive_metadata_miss_count = 0;
 		b8 m_archive_metadata_found = false;
 		b8 m_archive_metadata_invalid = false;
 		std::string m_archive_metadata_error;
@@ -72,17 +75,26 @@ namespace rsx::metal
 			m_impl->m_flushed_pipeline_count = archive_metadata.flushed_pipeline_count;
 			m_impl->m_archive_script_size = archive_metadata.script_size;
 			m_impl->m_archive_size = archive_metadata.archive_size;
+			m_impl->m_archive_script_hash = archive_metadata.script_hash;
+			m_impl->m_archive_hash = archive_metadata.archive_hash;
 
-			rsx_log.notice("Metal pipeline archive metadata restored: pipelines=%u, script_size=0x%llx, archive_size=0x%llx",
+			rsx_log.notice("Metal pipeline archive metadata restored: pipelines=%u, script_size=0x%llx, archive_size=0x%llx, script_hash=0x%llx, archive_hash=0x%llx",
 				archive_metadata.flushed_pipeline_count,
 				archive_metadata.script_size,
-				archive_metadata.archive_size);
+				archive_metadata.archive_size,
+				archive_metadata.script_hash,
+				archive_metadata.archive_hash);
 		}
 		else if (!archive_metadata_error.empty())
 		{
 			m_impl->m_archive_metadata_invalid = true;
 			m_impl->m_archive_metadata_error = std::move(archive_metadata_error);
 			rsx_log.warning("Metal pipeline archive metadata is invalid and will not seed the pipeline cache: %s", m_impl->m_archive_metadata_error);
+		}
+		else
+		{
+			m_impl->m_archive_metadata_miss_count++;
+			rsx_log.notice("Metal pipeline archive metadata was not found; pipeline archive cache will be populated after pipeline compilation");
 		}
 	}
 
@@ -143,10 +155,11 @@ namespace rsx::metal
 				fmt::throw_exception("Metal pipeline cache failed to serialize pipeline archive '%s': %s", archive_path, error);
 			}
 
+			const u32 expected_flushed_pipeline_count = m_impl->m_flushed_pipeline_count + m_impl->m_dirty_pipeline_count;
 			m_impl->m_cache.store_pipeline_archive_metadata(
 				script_path,
 				archive_path,
-				m_impl->m_flushed_pipeline_count + m_impl->m_dirty_pipeline_count);
+				expected_flushed_pipeline_count);
 
 			pipeline_archive_metadata archive_metadata;
 			std::string archive_metadata_error;
@@ -160,11 +173,20 @@ namespace rsx::metal
 				fmt::throw_exception("Metal pipeline archive metadata lookup failed after flush: %s", archive_metadata_error);
 			}
 
+			if (archive_metadata.flushed_pipeline_count != expected_flushed_pipeline_count)
+			{
+				fmt::throw_exception("Metal pipeline archive metadata has flushed pipeline count %u but expected %u",
+					archive_metadata.flushed_pipeline_count,
+					expected_flushed_pipeline_count);
+			}
+
 			m_impl->m_flushed_pipeline_count += m_impl->m_dirty_pipeline_count;
 			m_impl->m_dirty_pipeline_count = 0;
 			m_impl->m_archived_pipeline_count = archive_metadata.flushed_pipeline_count;
 			m_impl->m_archive_script_size = archive_metadata.script_size;
 			m_impl->m_archive_size = archive_metadata.archive_size;
+			m_impl->m_archive_script_hash = archive_metadata.script_hash;
+			m_impl->m_archive_hash = archive_metadata.archive_hash;
 			m_impl->m_archive_metadata_found = true;
 			m_impl->m_archive_metadata_invalid = false;
 			m_impl->m_archive_metadata_error.clear();
@@ -192,6 +214,9 @@ namespace rsx::metal
 			.archived_pipeline_count = m_impl->m_archived_pipeline_count,
 			.archive_script_size = m_impl->m_archive_script_size,
 			.archive_size = m_impl->m_archive_size,
+			.archive_script_hash = m_impl->m_archive_script_hash,
+			.archive_hash = m_impl->m_archive_hash,
+			.archive_metadata_miss_count = m_impl->m_archive_metadata_miss_count,
 			.archive_metadata_found = m_impl->m_archive_metadata_found,
 			.archive_metadata_invalid = m_impl->m_archive_metadata_invalid,
 			.script_path = m_impl->m_cache.pipeline_script_file_path(),
@@ -212,12 +237,15 @@ namespace rsx::metal
 		rsx_log.notice("Metal pipeline cache paths: script=%s, archive=%s",
 			cache_stats.script_path,
 			cache_stats.archive_path);
-		rsx_log.notice("Metal pipeline archive metadata: found=%u, invalid=%u, archived_pipelines=%u, script_size=0x%llx, archive_size=0x%llx",
+		rsx_log.notice("Metal pipeline archive metadata: found=%u, invalid=%u, misses=%u, archived_pipelines=%u, script_size=0x%llx, archive_size=0x%llx, script_hash=0x%llx, archive_hash=0x%llx",
 			static_cast<u32>(cache_stats.archive_metadata_found),
 			static_cast<u32>(cache_stats.archive_metadata_invalid),
+			cache_stats.archive_metadata_miss_count,
 			cache_stats.archived_pipeline_count,
 			cache_stats.archive_script_size,
-			cache_stats.archive_size);
+			cache_stats.archive_size,
+			cache_stats.archive_script_hash,
+			cache_stats.archive_hash);
 		if (cache_stats.archive_metadata_invalid)
 		{
 			rsx_log.warning("Metal pipeline archive metadata error: %s", cache_stats.archive_metadata_error);

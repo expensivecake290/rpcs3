@@ -6,6 +6,7 @@
 #include "MTLPipelineState.h"
 #include "MTLShaderCache.h"
 #include "MTLShaderEntrypoint.h"
+#include "MTLShaderEntrypointBuilder.h"
 #include "MTLShaderInterface.h"
 
 #include "Emu/RSX/Program/FragmentProgramDecompiler.h"
@@ -237,6 +238,7 @@ namespace
 
 		if (cached_shader.pipeline_source_hash != current_shader.pipeline_source_hash ||
 			cached_shader.pipeline_entry_point != current_shader.pipeline_entry_point ||
+			cached_shader.pipeline_source != current_shader.pipeline_source ||
 			cached_shader.pipeline_cache_path != current_shader.pipeline_cache_path ||
 			cached_shader.pipeline_entry_error != current_shader.pipeline_entry_error ||
 			cached_shader.pipeline_requirement_mask != current_shader.pipeline_requirement_mask ||
@@ -430,6 +432,53 @@ namespace
 		return text;
 	}
 
+	void validate_completed_shader_record(const rsx::metal::translated_shader& shader, const char* stage_name)
+	{
+		rsx_log.trace("validate_completed_shader_record(stage=%u, id=%u, source_hash=0x%llx, pipeline_source_hash=0x%llx, requirement_mask=0x%x, available=%u)",
+			static_cast<u32>(shader.stage),
+			shader.id,
+			shader.source_hash,
+			shader.pipeline_source_hash,
+			shader.pipeline_requirement_mask,
+			static_cast<u32>(shader.pipeline_entry_available));
+
+		if (!shader.source_hash || shader.cache_path.empty())
+		{
+			fmt::throw_exception("Metal cached %s shader record is missing helper source metadata", stage_name ? stage_name : "<null>");
+		}
+
+		validate_translated_shader_source(stage_name, shader.entry_point, shader.source);
+		rsx::metal::validate_pipeline_entry_requirement_mask(shader.pipeline_requirement_mask);
+
+		if (shader.pipeline_entry_available)
+		{
+			if (!shader.pipeline_source_hash ||
+				shader.pipeline_entry_point.empty() ||
+				shader.pipeline_source.empty() ||
+				shader.pipeline_cache_path.empty() ||
+				!shader.pipeline_entry_error.empty() ||
+				shader.pipeline_requirement_mask)
+			{
+				fmt::throw_exception("Metal cached %s shader record marks a pipeline entry available but executable source metadata is incomplete",
+					stage_name ? stage_name : "<null>");
+			}
+
+			rsx::metal::validate_pipeline_entry_source(shader.stage, shader.pipeline_source_hash, shader.pipeline_entry_point, shader.pipeline_source);
+			return;
+		}
+
+		if (shader.pipeline_source_hash ||
+			!shader.pipeline_entry_point.empty() ||
+			!shader.pipeline_source.empty() ||
+			!shader.pipeline_cache_path.empty() ||
+			!shader.pipeline_requirement_mask ||
+			shader.pipeline_entry_error.empty())
+		{
+			fmt::throw_exception("Metal cached %s shader record marks a pipeline entry gated but requirement metadata is incomplete",
+				stage_name ? stage_name : "<null>");
+		}
+	}
+
 	rsx::metal::translated_shader make_completed_shader_from_metadata(
 		rsx::metal::shader_stage stage,
 		const char* stage_name,
@@ -458,7 +507,6 @@ namespace
 			.pipeline_entry_available = metadata.pipeline_entry_available,
 		};
 
-		validate_translated_shader_source(stage_name, shader.entry_point, shader.source);
 		if (metadata.source_text_hash != shader_source_text_hash(shader.source))
 		{
 			fmt::throw_exception("Metal cached %s helper MSL hash mismatch for source_hash=0x%llx",
@@ -477,6 +525,7 @@ namespace
 			}
 		}
 
+		validate_completed_shader_record(shader, stage_name);
 		return shader;
 	}
 

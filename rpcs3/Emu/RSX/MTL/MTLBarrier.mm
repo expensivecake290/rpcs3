@@ -12,7 +12,9 @@ namespace rsx::metal
 			switch (stage)
 			{
 			case resource_stage::render:
-				return MTLStageVertex | MTLStageFragment | MTLStageTile | MTLStageObject | MTLStageMesh;
+				return MTLStageVertex | MTLStageFragment | MTLStageTile;
+			case resource_stage::mesh:
+				return MTLStageObject | MTLStageMesh;
 			case resource_stage::compute:
 				return MTLStageDispatch;
 			case resource_stage::blit:
@@ -29,14 +31,14 @@ namespace rsx::metal
 			switch (scope)
 			{
 			case resource_barrier_scope::none:
-				return MTL4VisibilityOptionNone;
+				break;
 			case resource_barrier_scope::buffers:
 			case resource_barrier_scope::textures:
 			case resource_barrier_scope::render_targets:
 				return MTL4VisibilityOptionDevice;
 			}
 
-			return MTL4VisibilityOptionDevice;
+			fmt::throw_exception("Metal required resource barrier cannot use an empty visibility scope");
 		}
 	}
 
@@ -55,6 +57,16 @@ namespace rsx::metal
 		if (!barrier.required)
 		{
 			return;
+		}
+
+		if (!barrier.resource_id)
+		{
+			fmt::throw_exception("Metal required resource barrier requires a non-zero resource id");
+		}
+
+		if (barrier.scope == resource_barrier_scope::none)
+		{
+			fmt::throw_exception("Metal required resource barrier for resource_id=0x%x has no visibility scope", barrier.resource_id);
 		}
 
 		if (!encoder_handle)

@@ -8,6 +8,8 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <vector>
+
 namespace
 {
 	std::string get_ns_string(NSString* value)
@@ -106,6 +108,7 @@ namespace rsx::metal
 		id<MTLDevice> m_device = nil;
 		std::unique_ptr<residency_manager> m_residency;
 		std::unique_ptr<heap_manager> m_heaps;
+		std::vector<void*> m_resident_heap_allocations;
 		device_caps m_caps{};
 	};
 
@@ -170,6 +173,17 @@ namespace rsx::metal
 
 		if (m_impl && m_impl->m_residency)
 		{
+			for (void* allocation_handle : m_impl->m_resident_heap_allocations)
+			{
+				m_impl->m_residency->remove_allocation(allocation_handle);
+			}
+
+			if (!m_impl->m_resident_heap_allocations.empty())
+			{
+				m_impl->m_residency->commit();
+				m_impl->m_resident_heap_allocations.clear();
+			}
+
 			m_impl->m_residency->end_residency();
 		}
 	}
@@ -217,6 +231,7 @@ namespace rsx::metal
 				{
 					add_resident_allocation(allocation.heap_handle);
 					commit_residency();
+					m_impl->m_resident_heap_allocations.push_back(allocation.heap_handle);
 				}
 
 				return
@@ -277,6 +292,7 @@ namespace rsx::metal
 				{
 					add_resident_allocation(allocation.heap_handle);
 					commit_residency();
+					m_impl->m_resident_heap_allocations.push_back(allocation.heap_handle);
 				}
 
 				return

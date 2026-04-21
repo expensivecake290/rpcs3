@@ -41,6 +41,7 @@ namespace rsx::metal
 		id<MTL4Archive> m_archive = nil;
 		std::string m_archive_path;
 		std::string m_archive_metadata_error;
+		std::string m_archive_load_error;
 		b8 m_archive_metadata_found = false;
 		b8 m_archive_metadata_invalid = false;
 		b8 m_archive_loaded = false;
@@ -93,6 +94,7 @@ namespace rsx::metal
 				{
 					const std::string error = archive_error ? get_ns_string([archive_error localizedDescription]) : "unknown error";
 					m_impl->m_archive_load_failed = true;
+					m_impl->m_archive_load_error = error;
 					rsx_log.warning("Metal pipeline archive load failed for '%s': %s", archive_metadata.archive_path, error);
 				}
 				else
@@ -137,6 +139,9 @@ namespace rsx::metal
 		const shader_compiler_stats compiler_stats = stats();
 		rsx_log.notice("Metal 4 compiler: %s", compiler_stats.compiler_ready ? "ready" : "missing");
 		rsx_log.notice("Metal 4 pipeline data serializer: %s", compiler_stats.pipeline_serializer_ready ? "ready" : "missing");
+		rsx_log.notice("Metal 4 compiler task options: %s, lookup_archive=%u",
+			compiler_stats.task_options_ready ? "ready" : "missing",
+			static_cast<u32>(compiler_stats.lookup_archive_configured));
 		rsx_log.notice("Metal 4 lookup archive: metadata=%u, metadata_invalid=%u, loaded=%u, load_failed=%u, archive_without_metadata=%u, path=%s",
 			static_cast<u32>(compiler_stats.archive_metadata_found),
 			static_cast<u32>(compiler_stats.archive_metadata_invalid),
@@ -148,6 +153,10 @@ namespace rsx::metal
 		{
 			rsx_log.warning("Metal 4 lookup archive metadata error: %s", compiler_stats.archive_metadata_error);
 		}
+		if (compiler_stats.archive_load_failed)
+		{
+			rsx_log.warning("Metal 4 lookup archive load error: %s", compiler_stats.archive_load_error);
+		}
 	}
 
 	shader_compiler_stats shader_compiler::stats() const
@@ -158,6 +167,8 @@ namespace rsx::metal
 		{
 			.compiler_ready = m_impl->m_compiler != nil,
 			.pipeline_serializer_ready = m_impl->m_pipeline_serializer != nil,
+			.task_options_ready = m_impl->m_task_options != nil,
+			.lookup_archive_configured = m_impl->m_task_options != nil && m_impl->m_archive != nil,
 			.archive_metadata_found = m_impl->m_archive_metadata_found,
 			.archive_metadata_invalid = m_impl->m_archive_metadata_invalid,
 			.archive_loaded = m_impl->m_archive_loaded,
@@ -165,6 +176,7 @@ namespace rsx::metal
 			.archive_load_failed = m_impl->m_archive_load_failed,
 			.archive_path = m_impl->m_archive_path,
 			.archive_metadata_error = m_impl->m_archive_metadata_error,
+			.archive_load_error = m_impl->m_archive_load_error,
 		};
 	}
 

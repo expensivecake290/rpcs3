@@ -43,7 +43,10 @@ namespace rsx::metal
 		u32 source_compile_failures = 0;
 		u32 dynamic_library_failures = 0;
 		u32 serialization_failures = 0;
+		u32 memory_validation_failures = 0;
 		u32 retained_libraries = 0;
+		u32 retained_library_records = 0;
+		u32 disk_loaded_library_count = 0;
 	};
 
 	void validate_shader_library_record(const shader_library_record& record, b8 require_handle);

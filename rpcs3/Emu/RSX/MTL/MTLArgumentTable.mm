@@ -6,6 +6,7 @@
 #include "MTLCommandBuffer.h"
 #include "MTLDevice.h"
 #include "MTLSampler.h"
+#include "MTLShaderInterface.h"
 #include "MTLTexture.h"
 #include "MTLTextureViewPool.h"
 
@@ -21,6 +22,13 @@ namespace
 		static_cast<u32>(rsx::metal::argument_table_render_stage::vertex) |
 		static_cast<u32>(rsx::metal::argument_table_render_stage::fragment) |
 		static_cast<u32>(rsx::metal::argument_table_render_stage::tile) |
+		static_cast<u32>(rsx::metal::argument_table_render_stage::object) |
+		static_cast<u32>(rsx::metal::argument_table_render_stage::mesh);
+	constexpr u32 traditional_render_stage_mask =
+		static_cast<u32>(rsx::metal::argument_table_render_stage::vertex) |
+		static_cast<u32>(rsx::metal::argument_table_render_stage::fragment) |
+		static_cast<u32>(rsx::metal::argument_table_render_stage::tile);
+	constexpr u32 mesh_render_stage_mask =
 		static_cast<u32>(rsx::metal::argument_table_render_stage::object) |
 		static_cast<u32>(rsx::metal::argument_table_render_stage::mesh);
 
@@ -116,21 +124,53 @@ namespace
 		frame.track_object(object_handle);
 	}
 
-	void track_heap_resource_use(rsx::metal::command_frame& frame, const rsx::metal::heap_resource_usage& usage)
+	void track_heap_resource_use(
+		rsx::metal::command_frame& frame,
+		std::vector<void*>& tracked_heap_resources,
+		const rsx::metal::heap_resource_usage& usage)
 	{
 		rsx_log.trace("track_heap_resource_use(frame_index=%u, resource_handle=*0x%x)",
 			frame.frame_index(), usage.resource_handle);
 
-		if (usage.metal_device && usage.resource_handle)
+		if (!usage.metal_device || !usage.resource_handle)
 		{
-			usage.metal_device->track_heap_resource_use(frame, usage.resource_handle);
+			return;
 		}
+
+		for (void* tracked_heap_resource : tracked_heap_resources)
+		{
+			if (tracked_heap_resource == usage.resource_handle)
+			{
+				return;
+			}
+		}
+
+		tracked_heap_resources.push_back(usage.resource_handle);
+		usage.metal_device->track_heap_resource_use(frame, usage.resource_handle);
 	}
 
-	rsx::metal::resource_stage binding_resource_stage(b8 is_compute)
+	rsx::metal::resource_stage binding_resource_stage_for_render_stages(u32 stages)
 	{
-		rsx_log.trace("binding_resource_stage(is_compute=%d)", is_compute);
-		return is_compute ? rsx::metal::resource_stage::compute : rsx::metal::resource_stage::render;
+		rsx_log.trace("binding_resource_stage_for_render_stages(stages=0x%x)", stages);
+
+		if (!stages)
+		{
+			fmt::throw_exception("Metal argument table resource tracking requires at least one render stage");
+		}
+
+		if (stages & ~supported_render_stage_mask)
+		{
+			fmt::throw_exception("Metal argument table resource tracking has unsupported render stages: 0x%x", stages);
+		}
+
+		const b8 uses_mesh_stages = !!(stages & mesh_render_stage_mask);
+		const b8 uses_traditional_stages = !!(stages & traditional_render_stage_mask);
+		if (uses_mesh_stages && uses_traditional_stages)
+		{
+			fmt::throw_exception("Metal argument table resource tracking requires separate bindings for mesh/object stages and traditional render stages");
+		}
+
+		return uses_mesh_stages ? rsx::metal::resource_stage::mesh : rsx::metal::resource_stage::render;
 	}
 
 	void track_bound_resource_usage(
@@ -509,6 +549,42 @@ namespace rsx::metal
 		}
 	}
 
+	void argument_table::validate_shader_bindings(const shader_interface_layout& layout) const
+	{
+		rsx_log.trace("rsx::metal::argument_table::validate_shader_bindings(table=*0x%x, layout_stage=%u)",
+			handle(), static_cast<u32>(layout.stage));
+
+		std::lock_guard lock(m_impl->m_use_state->m_mutex);
+		validate_shader_bindings_locked(layout);
+	}
+
+	void argument_table::bind_to_render_encoder(command_frame& frame, void* render_encoder_handle, const shader_interface_layout& layout) const
+	{
+		rsx_log.trace("rsx::metal::argument_table::bind_to_render_encoder(frame_index=%u, render_encoder_handle=*0x%x, layout_stage=%u, stages=0x%x)",
+			frame.frame_index(), render_encoder_handle, static_cast<u32>(layout.stage), layout.render_stage_mask);
+
+		if (!render_encoder_handle)
+		{
+			fmt::throw_exception("Metal argument table render binding requires a valid render encoder");
+		}
+
+		if (@available(macOS 26.0, *))
+		{
+			std::lock_guard lock(m_impl->m_use_state->m_mutex);
+
+			validate_shader_bindings_locked(layout);
+
+			id<MTL4RenderCommandEncoder> encoder = (__bridge id<MTL4RenderCommandEncoder>)render_encoder_handle;
+			track_bound_resources(frame, render_encoder_handle, binding_resource_stage_for_render_stages(layout.render_stage_mask));
+			[encoder setArgumentTable:m_impl->m_table atStages:make_render_stages(layout.render_stage_mask)];
+			retain_bound_table_locked(frame);
+		}
+		else
+		{
+			fmt::throw_exception("Metal argument table render binding requires macOS 26.0 or newer");
+		}
+	}
+
 	void argument_table::bind_to_render_encoder(command_frame& frame, void* render_encoder_handle, u32 stages) const
 	{
 		rsx_log.trace("rsx::metal::argument_table::bind_to_render_encoder(frame_index=%u, render_encoder_handle=*0x%x, stages=0x%x)",
@@ -524,9 +600,9 @@ namespace rsx::metal
 			std::lock_guard lock(m_impl->m_use_state->m_mutex);
 
 			id<MTL4RenderCommandEncoder> encoder = (__bridge id<MTL4RenderCommandEncoder>)render_encoder_handle;
-			track_bound_resources(frame, render_encoder_handle, binding_resource_stage(false));
+			track_bound_resources(frame, render_encoder_handle, binding_resource_stage_for_render_stages(stages));
 			[encoder setArgumentTable:m_impl->m_table atStages:make_render_stages(stages)];
-			retain_bound_table(frame);
+			retain_bound_table_locked(frame);
 		}
 		else
 		{
@@ -549,13 +625,119 @@ namespace rsx::metal
 			std::lock_guard lock(m_impl->m_use_state->m_mutex);
 
 			id<MTL4ComputeCommandEncoder> encoder = (__bridge id<MTL4ComputeCommandEncoder>)compute_encoder_handle;
-			track_bound_resources(frame, compute_encoder_handle, binding_resource_stage(true));
+			track_bound_resources(frame, compute_encoder_handle, resource_stage::compute);
 			[encoder setArgumentTable:m_impl->m_table];
-			retain_bound_table(frame);
+			retain_bound_table_locked(frame);
 		}
 		else
 		{
 			fmt::throw_exception("Metal argument table compute binding requires macOS 26.0 or newer");
+		}
+	}
+
+	void argument_table::validate_shader_bindings_locked(const shader_interface_layout& layout) const
+	{
+		rsx_log.trace("rsx::metal::argument_table::validate_shader_bindings_locked(table=*0x%x, layout_stage=%u, stages=0x%x)",
+			handle(), static_cast<u32>(layout.stage), layout.render_stage_mask);
+
+		validate_shader_interface_layout(layout);
+
+		const argument_table_desc& expected = layout.argument_table;
+		if (m_impl->m_desc.max_buffers != expected.max_buffers ||
+			m_impl->m_desc.max_textures != expected.max_textures ||
+			m_impl->m_desc.max_samplers != expected.max_samplers)
+		{
+			fmt::throw_exception("Metal argument table descriptor mismatch for shader stage %u: table buffers=%u textures=%u samplers=%u, layout buffers=%u textures=%u samplers=%u",
+				static_cast<u32>(layout.stage),
+				m_impl->m_desc.max_buffers,
+				m_impl->m_desc.max_textures,
+				m_impl->m_desc.max_samplers,
+				expected.max_buffers,
+				expected.max_textures,
+				expected.max_samplers);
+		}
+
+		if (m_impl->m_desc.support_attribute_strides != expected.support_attribute_strides)
+		{
+			fmt::throw_exception("Metal argument table attribute-stride support mismatch for shader stage %u", static_cast<u32>(layout.stage));
+		}
+
+		const auto validate_buffer_slot = [this, &layout](u32 index, const char* role)
+		{
+			if (index >= m_impl->m_bound_buffers.size())
+			{
+				fmt::throw_exception("Metal shader stage %u %s buffer slot is out of range: index=%u, buffers=%u",
+					static_cast<u32>(layout.stage),
+					role,
+					index,
+					static_cast<u32>(m_impl->m_bound_buffers.size()));
+			}
+
+			const argument_table_bound_resource& binding = m_impl->m_bound_buffers[index];
+			if (!binding.m_resource_id || !binding.m_object_handle)
+			{
+				fmt::throw_exception("Metal shader stage %u requires %s buffer slot %u to be bound before argument table submission",
+					static_cast<u32>(layout.stage),
+					role,
+					index);
+			}
+		};
+
+		const auto validate_texture_slot = [this, &layout](u32 index)
+		{
+			if (index >= m_impl->m_bound_textures.size())
+			{
+				fmt::throw_exception("Metal shader stage %u texture slot is out of range: index=%u, textures=%u",
+					static_cast<u32>(layout.stage),
+					index,
+					static_cast<u32>(m_impl->m_bound_textures.size()));
+			}
+
+			const argument_table_bound_resource& binding = m_impl->m_bound_textures[index];
+			if (!binding.m_resource_id || !binding.m_object_handle)
+			{
+				fmt::throw_exception("Metal shader stage %u requires texture slot %u to be bound before argument table submission",
+					static_cast<u32>(layout.stage),
+					index);
+			}
+		};
+
+		const auto validate_sampler_slot = [this, &layout](u32 index)
+		{
+			if (index >= m_impl->m_bound_samplers.size())
+			{
+				fmt::throw_exception("Metal shader stage %u sampler slot is out of range: index=%u, samplers=%u",
+					static_cast<u32>(layout.stage),
+					index,
+					static_cast<u32>(m_impl->m_bound_samplers.size()));
+			}
+
+			if (!m_impl->m_bound_samplers[index])
+			{
+				fmt::throw_exception("Metal shader stage %u requires sampler slot %u to be bound before argument table submission",
+					static_cast<u32>(layout.stage),
+					index);
+			}
+		};
+
+		if (layout.constants_buffer_index != shader_binding_none)
+		{
+			validate_buffer_slot(layout.constants_buffer_index, "constants");
+		}
+
+		for (u32 index = 0; index < layout.vertex_buffer_count; index++)
+		{
+			validate_buffer_slot(layout.vertex_buffer_base_index + index, "vertex input");
+		}
+
+		for (u32 index = 0; index < layout.texture_count; index++)
+		{
+			validate_texture_slot(layout.texture_base_index + index);
+		}
+
+		for (u32 index = 0; index < layout.sampler_count; index++)
+		{
+			validate_sampler_slot(layout.sampler_base_index + index);
 		}
 	}
 
@@ -614,7 +796,9 @@ namespace rsx::metal
 		validate_bound_resource_conflicts(stage);
 
 		std::vector<void*> tracked_objects;
+		std::vector<void*> tracked_heap_resources;
 		tracked_objects.reserve(1 + m_impl->m_bound_buffers.size() + m_impl->m_bound_textures.size() + m_impl->m_bound_samplers.size());
+		tracked_heap_resources.reserve(m_impl->m_bound_buffers.size() + m_impl->m_bound_textures.size());
 
 		track_object_once(frame, tracked_objects, handle());
 
@@ -626,14 +810,14 @@ namespace rsx::metal
 		for (const argument_table_bound_resource& buffer : m_impl->m_bound_buffers)
 		{
 			track_object_once(frame, tracked_objects, buffer.m_object_handle);
-			track_heap_resource_use(frame, buffer.m_heap_usage);
+			track_heap_resource_use(frame, tracked_heap_resources, buffer.m_heap_usage);
 			track_bound_resource_usage(frame, encoder_handle, buffer.m_resource_id, stage, buffer.m_access, resource_barrier_scope::buffers);
 		}
 
 		for (const argument_table_bound_resource& texture : m_impl->m_bound_textures)
 		{
 			track_object_once(frame, tracked_objects, texture.m_object_handle);
-			track_heap_resource_use(frame, texture.m_heap_usage);
+			track_heap_resource_use(frame, tracked_heap_resources, texture.m_heap_usage);
 			track_bound_resource_usage(frame, encoder_handle, texture.m_resource_id, stage, texture.m_access, resource_barrier_scope::textures);
 		}
 
@@ -643,19 +827,19 @@ namespace rsx::metal
 		}
 	}
 
-	void argument_table::retain_bound_table(command_frame& frame) const
+	void argument_table::retain_bound_table_locked(command_frame& frame) const
 	{
-		rsx_log.trace("rsx::metal::argument_table::retain_bound_table(frame_index=%u, table=*0x%x)",
+		rsx_log.trace("rsx::metal::argument_table::retain_bound_table_locked(frame_index=%u, table=*0x%x)",
 			frame.frame_index(), handle());
 
 		std::shared_ptr<argument_table_use_state> use_state = m_impl->m_use_state;
-		use_state->m_in_flight_use_count++;
-
 		frame.on_completed([use_state]()
 		{
 			std::lock_guard lock(use_state->m_mutex);
 			ensure(use_state->m_in_flight_use_count);
 			use_state->m_in_flight_use_count--;
 		});
+
+		use_state->m_in_flight_use_count++;
 	}
 }

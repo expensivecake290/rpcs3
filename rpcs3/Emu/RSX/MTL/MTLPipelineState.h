@@ -1,5 +1,6 @@
 #pragma once
 
+#include "MTLShaderInterface.h"
 #include "MTLShaderLibrary.h"
 
 #include "util/types.hpp"
@@ -10,6 +11,8 @@
 
 namespace rsx::metal
 {
+	class argument_table;
+	class command_frame;
 	class pipeline_cache;
 	class persistent_shader_cache;
 	class shader_compiler;
@@ -34,6 +37,8 @@ namespace rsx::metal
 		std::string label;
 		render_pipeline_shader vertex;
 		render_pipeline_shader fragment;
+		shader_interface_layout vertex_layout = make_vertex_shader_interface_layout();
+		shader_interface_layout fragment_layout = make_fragment_shader_interface_layout(0, 0);
 		std::vector<shader_library_record> linked_libraries;
 		u32 color_pixel_format = 0;
 		u32 raster_sample_count = 1;
@@ -48,8 +53,20 @@ namespace rsx::metal
 	{
 		u64 pipeline_hash = 0;
 		void* pipeline_handle = nullptr;
+		shader_interface_layout primary_layout = make_vertex_shader_interface_layout();
+		shader_interface_layout fragment_layout = make_fragment_shader_interface_layout(0, 0);
 		b8 cached = false;
+		b8 mesh_pipeline = false;
+		b8 has_fragment_layout = false;
 	};
+
+	void validate_pipeline_binding_record(const render_pipeline_record& record);
+	void bind_pipeline_arguments(
+		command_frame& frame,
+		void* render_encoder_handle,
+		const render_pipeline_record& record,
+		const argument_table& primary_table,
+		const argument_table* fragment_table = nullptr);
 
 	struct render_pipeline_cache_stats
 	{
@@ -85,6 +102,8 @@ namespace rsx::metal
 		render_pipeline_shader object;
 		render_pipeline_shader mesh;
 		render_pipeline_shader fragment;
+		shader_interface_layout mesh_layout = make_mesh_shader_interface_layout();
+		shader_interface_layout fragment_layout = make_fragment_shader_interface_layout(0, 0);
 		std::vector<shader_library_record> linked_libraries;
 		u32 color_pixel_format = 0;
 		u32 raster_sample_count = 1;

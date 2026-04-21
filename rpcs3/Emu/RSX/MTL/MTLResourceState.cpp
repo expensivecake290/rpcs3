@@ -19,6 +19,24 @@ namespace rsx::metal
 			return previous_access == resource_access::write || next_access == resource_access::write;
 		}
 
+		void validate_resource_usage(const resource_usage& usage)
+		{
+			if (usage.resource_id == 0)
+			{
+				fmt::throw_exception("Metal resource usage tracking requires a non-zero GPU resource id");
+			}
+
+			if (usage.stage == resource_stage::present)
+			{
+				fmt::throw_exception("Metal resource usage tracking cannot record presentation directly; use a present boundary");
+			}
+
+			if (usage.scope == resource_barrier_scope::none)
+			{
+				fmt::throw_exception("Metal resource usage tracking requires a concrete barrier scope");
+			}
+		}
+
 		resource_barrier_scope merge_barrier_scope(resource_barrier_scope previous_scope, resource_barrier_scope next_scope)
 		{
 			if (previous_scope == next_scope || previous_scope == resource_barrier_scope::none)
@@ -79,6 +97,8 @@ namespace rsx::metal
 		{
 		case resource_stage::render:
 			return "render";
+		case resource_stage::mesh:
+			return "mesh";
 		case resource_stage::compute:
 			return "compute";
 		case resource_stage::blit:
@@ -159,10 +179,7 @@ namespace rsx::metal
 			describe_resource_access(usage.access),
 			describe_resource_barrier_scope(usage.scope));
 
-		if (usage.resource_id == 0)
-		{
-			fmt::throw_exception("Metal resource usage tracking requires a non-zero GPU resource id");
-		}
+		validate_resource_usage(usage);
 
 		m_impl->m_usage_count++;
 		if (usage.access == resource_access::write)
@@ -185,6 +202,11 @@ namespace rsx::metal
 			});
 
 			return {};
+		}
+
+		if (found->second.m_stage == resource_stage::present)
+		{
+			fmt::throw_exception("Metal resource_id=0x%x was reused after a present boundary in the same frame", usage.resource_id);
 		}
 
 		resource_barrier barrier
@@ -264,7 +286,7 @@ namespace rsx::metal
 
 		if (found->second.m_access != resource_access::write)
 		{
-			rsx_log.warning("Metal present boundary for resource_id=0x%x follows %s/%s usage instead of a render write",
+			fmt::throw_exception("Metal present boundary for resource_id=0x%x follows %s/%s usage instead of a GPU write",
 				resource_id,
 				describe_resource_stage(found->second.m_stage),
 				describe_resource_access(found->second.m_access));

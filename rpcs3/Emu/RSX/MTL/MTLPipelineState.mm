@@ -1,6 +1,8 @@
 #include "stdafx.h"
 #include "MTLPipelineState.h"
 
+#include "MTLArgumentTable.h"
+#include "MTLCommandBuffer.h"
 #include "MTLPipelineCache.h"
 #include "MTLShaderCache.h"
 #include "MTLShaderCompiler.h"
@@ -106,6 +108,19 @@ namespace
 		}
 
 		return hash;
+	}
+
+	u64 pipeline_source_text_hash(std::string_view source)
+	{
+		rsx_log.trace("pipeline_source_text_hash(size=0x%x)", source.size());
+
+		usz hash = rpcs3::fnv_seed;
+		for (const char c : source)
+		{
+			hash = rpcs3::hash64(hash, static_cast<u8>(c));
+		}
+
+		return static_cast<u64>(hash);
 	}
 
 	u64 linked_library_dependency_hash(const std::vector<rsx::metal::shader_library_record>& libraries)
@@ -270,6 +285,11 @@ namespace
 			return;
 		}
 
+		if (std::strcmp(stage, "object") == 0)
+		{
+			fmt::throw_exception("Metal object shader pipeline source validation requires confirmed MSL object function syntax");
+		}
+
 		rsx_log.warning("Metal %s pipeline shader source validation is limited because the stage is not an RSX shader stage", stage);
 	}
 
@@ -283,18 +303,187 @@ namespace
 		return MTLSizeMake(size.width, size.height, size.depth);
 	}
 
+	constexpr u32 argument_stage(rsx::metal::argument_table_render_stage stage)
+	{
+		return static_cast<u32>(stage);
+	}
+
+	void validate_pipeline_argument_layout(
+		const char* name,
+		const rsx::metal::shader_interface_layout& layout,
+		rsx::metal::shader_stage expected_stage,
+		u32 required_stage_mask,
+		u32 forbidden_stage_mask)
+	{
+		rsx_log.trace("validate_pipeline_argument_layout(name=%s, layout_stage=%u, expected_stage=%u, stages=0x%x)",
+			name ? name : "<null>",
+			static_cast<u32>(layout.stage),
+			static_cast<u32>(expected_stage),
+			layout.render_stage_mask);
+
+		rsx::metal::validate_shader_interface_layout(layout);
+
+		if (layout.stage != expected_stage)
+		{
+			fmt::throw_exception("Metal %s pipeline argument layout stage mismatch: layout=%u, expected=%u",
+				name ? name : "<null>",
+				static_cast<u32>(layout.stage),
+				static_cast<u32>(expected_stage));
+		}
+
+		if ((layout.render_stage_mask & required_stage_mask) != required_stage_mask)
+		{
+			fmt::throw_exception("Metal %s pipeline argument layout is missing required render stages: stages=0x%x, required=0x%x",
+				name ? name : "<null>",
+				layout.render_stage_mask,
+				required_stage_mask);
+		}
+
+		if (layout.render_stage_mask & forbidden_stage_mask)
+		{
+			fmt::throw_exception("Metal %s pipeline argument layout contains incompatible render stages: stages=0x%x, forbidden=0x%x",
+				name ? name : "<null>",
+				layout.render_stage_mask,
+				forbidden_stage_mask);
+		}
+	}
+
+	void validate_render_pipeline_argument_layouts(const rsx::metal::render_pipeline_desc& desc)
+	{
+		rsx_log.trace("validate_render_pipeline_argument_layouts(pipeline_hash=0x%llx, rasterization_enabled=%u)",
+			desc.pipeline_hash,
+			static_cast<u32>(desc.rasterization_enabled));
+
+		constexpr u32 vertex_stage = argument_stage(rsx::metal::argument_table_render_stage::vertex);
+		constexpr u32 fragment_stage = argument_stage(rsx::metal::argument_table_render_stage::fragment);
+		constexpr u32 non_vertex_stages =
+			argument_stage(rsx::metal::argument_table_render_stage::fragment) |
+			argument_stage(rsx::metal::argument_table_render_stage::tile) |
+			argument_stage(rsx::metal::argument_table_render_stage::object) |
+			argument_stage(rsx::metal::argument_table_render_stage::mesh);
+		constexpr u32 non_fragment_stages =
+			argument_stage(rsx::metal::argument_table_render_stage::vertex) |
+			argument_stage(rsx::metal::argument_table_render_stage::tile) |
+			argument_stage(rsx::metal::argument_table_render_stage::object) |
+			argument_stage(rsx::metal::argument_table_render_stage::mesh);
+
+		validate_pipeline_argument_layout("vertex", desc.vertex_layout, rsx::metal::shader_stage::vertex, vertex_stage, non_vertex_stages);
+
+		if (desc.rasterization_enabled)
+		{
+			validate_pipeline_argument_layout("fragment", desc.fragment_layout, rsx::metal::shader_stage::fragment, fragment_stage, non_fragment_stages);
+		}
+	}
+
+	void validate_mesh_pipeline_argument_layouts(const rsx::metal::mesh_pipeline_desc& desc)
+	{
+		rsx_log.trace("validate_mesh_pipeline_argument_layouts(pipeline_hash=0x%llx, rasterization_enabled=%u)",
+			desc.pipeline_hash,
+			static_cast<u32>(desc.rasterization_enabled));
+
+		constexpr u32 mesh_stage = argument_stage(rsx::metal::argument_table_render_stage::mesh);
+		constexpr u32 fragment_stage = argument_stage(rsx::metal::argument_table_render_stage::fragment);
+		constexpr u32 traditional_stages =
+			argument_stage(rsx::metal::argument_table_render_stage::vertex) |
+			argument_stage(rsx::metal::argument_table_render_stage::fragment) |
+			argument_stage(rsx::metal::argument_table_render_stage::tile);
+		constexpr u32 non_fragment_stages =
+			argument_stage(rsx::metal::argument_table_render_stage::vertex) |
+			argument_stage(rsx::metal::argument_table_render_stage::tile) |
+			argument_stage(rsx::metal::argument_table_render_stage::object) |
+			argument_stage(rsx::metal::argument_table_render_stage::mesh);
+
+		validate_pipeline_argument_layout("mesh", desc.mesh_layout, rsx::metal::shader_stage::mesh, mesh_stage, traditional_stages);
+
+		if (desc.rasterization_enabled)
+		{
+			validate_pipeline_argument_layout("fragment", desc.fragment_layout, rsx::metal::shader_stage::fragment, fragment_stage, non_fragment_stages);
+		}
+	}
+
+	rsx::metal::render_pipeline_record make_pipeline_record(
+		u64 pipeline_hash,
+		void* pipeline_handle,
+		const rsx::metal::shader_interface_layout& primary_layout,
+		const rsx::metal::shader_interface_layout& fragment_layout,
+		b8 has_fragment_layout,
+		b8 cached,
+		b8 mesh_pipeline)
+	{
+		rsx_log.trace("make_pipeline_record(pipeline_hash=0x%llx, pipeline_handle=*0x%x, cached=%u, mesh_pipeline=%u, has_fragment_layout=%u)",
+			pipeline_hash,
+			pipeline_handle,
+			static_cast<u32>(cached),
+			static_cast<u32>(mesh_pipeline),
+			static_cast<u32>(has_fragment_layout));
+
+		rsx::metal::render_pipeline_record record
+		{
+			.pipeline_hash = pipeline_hash,
+			.pipeline_handle = pipeline_handle,
+			.primary_layout = primary_layout,
+			.fragment_layout = fragment_layout,
+			.cached = cached,
+			.mesh_pipeline = mesh_pipeline,
+			.has_fragment_layout = has_fragment_layout,
+		};
+
+		rsx::metal::validate_pipeline_binding_record(record);
+		return record;
+	}
+
 	void persist_pipeline_source(const rsx::metal::persistent_shader_cache& cache, const char* stage, const rsx::metal::render_pipeline_shader& shader)
 	{
 		const std::string path = cache.msl_path() + fmt::format("pipeline_%s_%llX.msl", stage, shader.source_hash);
 
-		if (fs::stat_t source_stat{}; fs::get_stat(path, source_stat) && !source_stat.is_directory && source_stat.size)
+		if (!shader.source_hash || shader.source.empty())
 		{
-			return;
+			fmt::throw_exception("Metal pipeline source persistence requires non-empty source with a non-zero hash");
+		}
+
+		if (pipeline_source_text_hash(shader.source) != shader.source_hash)
+		{
+			fmt::throw_exception("Metal pipeline source hash mismatch before persistence for '%s'", path);
+		}
+
+		if (fs::stat_t source_stat{}; fs::get_stat(path, source_stat))
+		{
+			if (source_stat.is_directory)
+			{
+				fmt::throw_exception("Metal pipeline source cache path is a directory: '%s'", path);
+			}
+
+			if (source_stat.size)
+			{
+				fs::file existing{path, fs::read};
+				if (existing)
+				{
+					const std::string existing_source = existing.to_string();
+					if (pipeline_source_text_hash(existing_source) == shader.source_hash)
+					{
+						return;
+					}
+				}
+
+				rsx_log.warning("Metal pipeline source cache entry is stale and will be rewritten: %s", path);
+			}
 		}
 
 		if (!fs::write_file(path, fs::rewrite, shader.source))
 		{
 			fmt::throw_exception("Metal pipeline source cache write failed for '%s' (%s)", path.c_str(), fs::g_tls_error);
+		}
+
+		fs::file written{path, fs::read};
+		if (!written)
+		{
+			fmt::throw_exception("Metal pipeline source cache is not readable after write: '%s'", path);
+		}
+
+		const std::string written_source = written.to_string();
+		if (pipeline_source_text_hash(written_source) != shader.source_hash)
+		{
+			fmt::throw_exception("Metal pipeline source cache verification failed for '%s'", path);
 		}
 	}
 
@@ -401,6 +590,83 @@ namespace rsx::metal
 		};
 	}
 
+	void validate_pipeline_binding_record(const render_pipeline_record& record)
+	{
+		rsx_log.trace("rsx::metal::validate_pipeline_binding_record(pipeline_hash=0x%llx, pipeline_handle=*0x%x, cached=%u, mesh_pipeline=%u, has_fragment_layout=%u)",
+			record.pipeline_hash,
+			record.pipeline_handle,
+			static_cast<u32>(record.cached),
+			static_cast<u32>(record.mesh_pipeline),
+			static_cast<u32>(record.has_fragment_layout));
+
+		if (!record.pipeline_hash)
+		{
+			fmt::throw_exception("Metal pipeline binding record requires a non-zero pipeline hash");
+		}
+
+		if (!record.pipeline_handle)
+		{
+			fmt::throw_exception("Metal pipeline binding record requires a valid pipeline handle");
+		}
+
+		validate_shader_interface_layout(record.primary_layout);
+		if (record.primary_layout.stage != (record.mesh_pipeline ? shader_stage::mesh : shader_stage::vertex))
+		{
+			fmt::throw_exception("Metal pipeline binding record primary layout stage mismatch: layout=%u, mesh_pipeline=%u",
+				static_cast<u32>(record.primary_layout.stage),
+				static_cast<u32>(record.mesh_pipeline));
+		}
+
+		if (record.has_fragment_layout)
+		{
+			validate_shader_interface_layout(record.fragment_layout);
+			if (record.fragment_layout.stage != shader_stage::fragment)
+			{
+				fmt::throw_exception("Metal pipeline binding record fragment layout stage mismatch: layout=%u",
+					static_cast<u32>(record.fragment_layout.stage));
+			}
+		}
+	}
+
+	void bind_pipeline_arguments(
+		command_frame& frame,
+		void* render_encoder_handle,
+		const render_pipeline_record& record,
+		const argument_table& primary_table,
+		const argument_table* fragment_table)
+	{
+		rsx_log.trace("rsx::metal::bind_pipeline_arguments(frame_index=%u, render_encoder_handle=*0x%x, pipeline_hash=0x%llx, mesh_pipeline=%u, has_fragment_layout=%u)",
+			frame.frame_index(),
+			render_encoder_handle,
+			record.pipeline_hash,
+			static_cast<u32>(record.mesh_pipeline),
+			static_cast<u32>(record.has_fragment_layout));
+
+		if (!render_encoder_handle)
+		{
+			fmt::throw_exception("Metal pipeline argument binding requires a valid render encoder");
+		}
+
+		validate_pipeline_binding_record(record);
+		primary_table.bind_to_render_encoder(frame, render_encoder_handle, record.primary_layout);
+
+		if (record.has_fragment_layout)
+		{
+			if (!fragment_table)
+			{
+				fmt::throw_exception("Metal rasterized pipeline argument binding requires a fragment argument table");
+			}
+
+			fragment_table->bind_to_render_encoder(frame, render_encoder_handle, record.fragment_layout);
+			return;
+		}
+
+		if (fragment_table)
+		{
+			fmt::throw_exception("Metal non-rasterized pipeline argument binding received an unused fragment argument table");
+		}
+	}
+
 	struct render_pipeline_cache::render_pipeline_cache_impl
 	{
 		shader_compiler& m_compiler;
@@ -472,6 +738,7 @@ namespace rsx::metal
 			fmt::throw_exception("Metal render pipeline requires a non-zero sample count");
 		}
 
+		validate_render_pipeline_argument_layouts(desc);
 		validate_shader_source("vertex", desc.vertex);
 
 		if (desc.rasterization_enabled)
@@ -489,12 +756,14 @@ namespace rsx::metal
 		{
 			m_impl->m_cache_hits++;
 
-			return
-			{
-				.pipeline_hash = desc.pipeline_hash,
-				.pipeline_handle = (__bridge void*)cached_pipeline,
-				.cached = true,
-			};
+			return make_pipeline_record(
+				desc.pipeline_hash,
+				(__bridge void*)cached_pipeline,
+				desc.vertex_layout,
+				desc.fragment_layout,
+				desc.rasterization_enabled,
+				true,
+				false);
 		}
 
 		if (@available(macOS 26.0, *))
@@ -589,12 +858,14 @@ namespace rsx::metal
 				desc.rasterization_enabled);
 			m_impl->m_pipeline_cache.record_pipeline_compilation();
 
-			return
-			{
-				.pipeline_hash = desc.pipeline_hash,
-				.pipeline_handle = (__bridge void*)pipeline,
-				.cached = false,
-			};
+			return make_pipeline_record(
+				desc.pipeline_hash,
+				(__bridge void*)pipeline,
+				desc.vertex_layout,
+				desc.fragment_layout,
+				desc.rasterization_enabled,
+				false,
+				false);
 		}
 
 		fmt::throw_exception("Metal render pipeline compilation requires macOS 26.0 or newer");
@@ -620,6 +891,7 @@ namespace rsx::metal
 			fmt::throw_exception("Metal mesh pipeline requires a non-zero sample count");
 		}
 
+		validate_mesh_pipeline_argument_layouts(desc);
 		validate_shader_source("mesh", desc.mesh);
 
 		const b8 has_object_stage = has_shader_source(desc.object);
@@ -643,12 +915,14 @@ namespace rsx::metal
 		{
 			m_impl->m_mesh_cache_hits++;
 
-			return
-			{
-				.pipeline_hash = desc.pipeline_hash,
-				.pipeline_handle = (__bridge void*)cached_pipeline,
-				.cached = true,
-			};
+			return make_pipeline_record(
+				desc.pipeline_hash,
+				(__bridge void*)cached_pipeline,
+				desc.mesh_layout,
+				desc.fragment_layout,
+				desc.rasterization_enabled,
+				true,
+				true);
 		}
 
 		if (@available(macOS 26.0, *))
@@ -767,12 +1041,14 @@ namespace rsx::metal
 				desc.rasterization_enabled);
 			m_impl->m_pipeline_cache.record_pipeline_compilation();
 
-			return
-			{
-				.pipeline_hash = desc.pipeline_hash,
-				.pipeline_handle = (__bridge void*)pipeline,
-				.cached = false,
-			};
+			return make_pipeline_record(
+				desc.pipeline_hash,
+				(__bridge void*)pipeline,
+				desc.mesh_layout,
+				desc.fragment_layout,
+				desc.rasterization_enabled,
+				false,
+				true);
 		}
 
 		fmt::throw_exception("Metal mesh pipeline compilation requires macOS 26.0 or newer");

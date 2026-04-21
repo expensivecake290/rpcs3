@@ -83,6 +83,18 @@ namespace rsx::metal
 			frame.frame_index(), drawable_handle);
 
 		id<MTLDrawable> drawable = (__bridge id<MTLDrawable>)drawable_handle;
+		const resource_state_stats resource_stats = frame.resource_stats();
+
+		if (drawable && !resource_stats.present_boundary_count)
+		{
+			fmt::throw_exception("Metal drawable submission requires a recorded present boundary");
+		}
+
+		if (!drawable && resource_stats.present_boundary_count)
+		{
+			fmt::throw_exception("Metal non-drawable submission recorded %u present boundaries",
+				resource_stats.present_boundary_count);
+		}
 
 		if (@available(macOS 26.0, *))
 		{

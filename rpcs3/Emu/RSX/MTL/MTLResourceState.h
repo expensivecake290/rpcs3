@@ -15,6 +15,7 @@ namespace rsx::metal
 	enum class resource_stage : u8
 	{
 		render,
+		mesh,
 		compute,
 		blit,
 		present

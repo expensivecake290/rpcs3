@@ -38,6 +38,8 @@ namespace rsx::metal
 		u64 source_text_hash = 0;
 		std::string entry_point;
 		std::string library_path;
+		u64 library_size = 0;
+		u64 library_hash = 0;
 		u32 pipeline_requirement_mask = 0;
 		std::string pipeline_requirement_description;
 		b8 pipeline_entry_available = false;
@@ -74,6 +76,8 @@ namespace rsx::metal
 		std::string archive_path;
 		u64 script_size = 0;
 		u64 archive_size = 0;
+		u64 script_hash = 0;
+		u64 archive_hash = 0;
 		u32 flushed_pipeline_count = 0;
 	};
 
@@ -87,6 +91,7 @@ namespace rsx::metal
 		u64 mesh_source_hash = 0;
 		u64 linked_library_hash = 0;
 		u32 linked_library_count = 0;
+		u32 shader_dependency_count = 0;
 		u32 color_pixel_format = 0;
 		u32 raster_sample_count = 0;
 		b8 rasterization_enabled = false;

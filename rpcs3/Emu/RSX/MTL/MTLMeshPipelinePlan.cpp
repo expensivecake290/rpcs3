@@ -22,7 +22,7 @@ namespace rsx::metal
 				pipeline_requirement(pipeline_entry_requirement::argument_table_shader_binding) |
 				pipeline_requirement(pipeline_entry_requirement::mesh_object_mapping) |
 				pipeline_requirement(pipeline_entry_requirement::mesh_grid_mapping),
-			.gated_reason = "Metal mesh pipeline entry generation is gated until RSX-to-MSL mesh/object shader mapping, mesh grid dispatch layout, and argument-table shader binding are implemented",
+			.gated_reason = "Metal mesh pipeline entry generation is gated until RSX-to-MSL mesh/object shader mapping, mesh grid dispatch layout, and argument-table shader binding are implemented; no CPU geometry preprocessing or meshletizer path is available",
 		};
 
 		validate_mesh_pipeline_plan(plan);
@@ -74,6 +74,21 @@ namespace rsx::metal
 		{
 			fmt::throw_exception("Metal mesh pipeline plan grid mapping requirement mismatch");
 		}
+
+		if (!plan.preferred_for_gpu_geometry_expansion)
+		{
+			fmt::throw_exception("Metal mesh pipeline plan must prefer GPU mesh execution for validated geometry-expansion workloads");
+		}
+
+		if (plan.allows_cpu_geometry_preprocessing)
+		{
+			fmt::throw_exception("Metal mesh pipeline plan must not allow CPU geometry preprocessing");
+		}
+
+		if (plan.replaces_traditional_vertex_path)
+		{
+			fmt::throw_exception("Metal mesh pipeline plan must not replace the traditional vertex/fragment path globally");
+		}
 	}
 
 	std::string describe_mesh_pipeline_plan(const mesh_pipeline_plan& plan)
@@ -82,11 +97,14 @@ namespace rsx::metal
 
 		validate_mesh_pipeline_plan(plan);
 
-		return fmt::format("requirements=0x%x (%s); interface={%s}; stage_io={%s}; %s",
+		return fmt::format("requirements=0x%x (%s); interface={%s}; stage_io={%s}; gpu_geometry_expansion=%s; cpu_geometry_preprocessing=%s; global_vertex_path_replacement=%s; %s",
 			plan.requirement_mask,
 			describe_pipeline_entry_requirements(plan.requirement_mask),
 			describe_shader_interface_layout(plan.interface_layout),
 			describe_shader_stage_io_layout(plan.interface_layout),
+			plan.preferred_for_gpu_geometry_expansion ? "preferred" : "not_preferred",
+			plan.allows_cpu_geometry_preprocessing ? "allowed" : "forbidden",
+			plan.replaces_traditional_vertex_path ? "yes" : "no",
 			plan.gated_reason);
 	}
 }
