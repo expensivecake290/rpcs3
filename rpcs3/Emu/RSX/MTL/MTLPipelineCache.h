@@ -24,6 +24,7 @@ namespace rsx::metal
 		u64 archive_size = 0;
 		u64 archive_script_hash = 0;
 		u64 archive_hash = 0;
+		u32 archive_metadata_restore_count = 0;
 		u32 archive_metadata_miss_count = 0;
 		b8 archive_metadata_found = false;
 		b8 archive_metadata_invalid = false;

@@ -445,6 +445,32 @@ namespace rsx::metal
 			pipeline_requirement(pipeline_entry_requirement::mesh_grid_mapping);
 	}
 
+	u32 pipeline_entry_requirement_mask_for_stage(shader_stage stage)
+	{
+		rsx_log.trace("rsx::metal::pipeline_entry_requirement_mask_for_stage(stage=%u)", static_cast<u32>(stage));
+
+		constexpr u32 argument_table_mask = pipeline_requirement(pipeline_entry_requirement::argument_table_shader_binding);
+
+		switch (stage)
+		{
+		case shader_stage::vertex:
+			return argument_table_mask |
+				pipeline_requirement(pipeline_entry_requirement::vertex_input_fetch) |
+				pipeline_requirement(pipeline_entry_requirement::viewport_depth_transform);
+		case shader_stage::fragment:
+			return argument_table_mask |
+				pipeline_requirement(pipeline_entry_requirement::stage_input_layout) |
+				pipeline_requirement(pipeline_entry_requirement::mrt_output_mapping) |
+				pipeline_requirement(pipeline_entry_requirement::depth_export_mapping);
+		case shader_stage::mesh:
+			return argument_table_mask |
+				pipeline_requirement(pipeline_entry_requirement::mesh_object_mapping) |
+				pipeline_requirement(pipeline_entry_requirement::mesh_grid_mapping);
+		}
+
+		fmt::throw_exception("Unknown Metal shader stage %u", static_cast<u32>(stage));
+	}
+
 	void validate_pipeline_entry_requirement_mask(u32 requirement_mask)
 	{
 		rsx_log.trace("rsx::metal::validate_pipeline_entry_requirement_mask(requirement_mask=0x%x)", requirement_mask);
@@ -455,6 +481,23 @@ namespace rsx::metal
 			fmt::throw_exception("Metal pipeline entry requirement mask contains unknown bits: requirement_mask=0x%x, unknown=0x%x",
 				requirement_mask,
 				unknown_mask);
+		}
+	}
+
+	void validate_pipeline_entry_requirement_mask_for_stage(shader_stage stage, u32 requirement_mask)
+	{
+		rsx_log.trace("rsx::metal::validate_pipeline_entry_requirement_mask_for_stage(stage=%u, requirement_mask=0x%x)",
+			static_cast<u32>(stage), requirement_mask);
+
+		validate_pipeline_entry_requirement_mask(requirement_mask);
+
+		const u32 invalid_mask = requirement_mask & ~pipeline_entry_requirement_mask_for_stage(stage);
+		if (invalid_mask)
+		{
+			fmt::throw_exception("Metal pipeline entry requirement mask contains invalid stage bits: stage=%u, requirement_mask=0x%x, invalid=0x%x",
+				static_cast<u32>(stage),
+				requirement_mask,
+				invalid_mask);
 		}
 	}
 

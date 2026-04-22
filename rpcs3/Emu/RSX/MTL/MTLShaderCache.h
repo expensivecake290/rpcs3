@@ -42,6 +42,7 @@ namespace rsx::metal
 		u64 library_hash = 0;
 		u32 pipeline_requirement_mask = 0;
 		std::string pipeline_requirement_description;
+		std::string pipeline_entry_error;
 		b8 pipeline_entry_available = false;
 	};
 
@@ -112,6 +113,8 @@ namespace rsx::metal
 		u32 pipeline_state_entries = 0;
 		u32 mesh_pipeline_state_entries = 0;
 		u32 library_entries = 0;
+		u32 library_available_entries = 0;
+		u32 library_gated_entries = 0;
 		u32 archive_entries = 0;
 	};
 
@@ -173,6 +176,7 @@ namespace rsx::metal
 			u64 source_text_hash,
 			const std::string& entry_point,
 			const std::string& library_path,
+			const std::string& pipeline_entry_error,
 			u32 pipeline_requirement_mask,
 			b8 pipeline_entry_available);
 		shader_library_metadata load_shader_library_metadata(const std::string& path) const;
@@ -182,6 +186,7 @@ namespace rsx::metal
 			u64 source_text_hash,
 			const std::string& entry_point,
 			const std::string& library_path,
+			const std::string& pipeline_entry_error,
 			u32 pipeline_requirement_mask,
 			b8 pipeline_entry_available,
 			shader_library_metadata& metadata) const;
@@ -191,6 +196,7 @@ namespace rsx::metal
 			u64 source_text_hash,
 			const std::string& entry_point,
 			const std::string& library_path,
+			const std::string& pipeline_entry_error,
 			u32 pipeline_requirement_mask,
 			b8 pipeline_entry_available,
 			shader_library_metadata& metadata,
@@ -316,7 +322,10 @@ namespace rsx::metal
 			u32& available_entries,
 			u32& gated_entries,
 			u32& mesh_entries) const;
-		u32 count_shader_library_metadata() const;
+		void count_shader_library_metadata(
+			u32& total_entries,
+			u32& available_entries,
+			u32& gated_entries) const;
 		u32 count_pipeline_archive_metadata() const;
 		void count_pipeline_state_metadata(
 			u32& total_entries,

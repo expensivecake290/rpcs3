@@ -13,6 +13,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <limits>
 #include <mutex>
 #include <vector>
 
@@ -171,6 +172,24 @@ namespace
 		}
 
 		return uses_mesh_stages ? rsx::metal::resource_stage::mesh : rsx::metal::resource_stage::render;
+	}
+
+	void validate_argument_table_resource_access(rsx::metal::resource_access access, const char* resource_kind)
+	{
+		rsx_log.trace("validate_argument_table_resource_access(access=%u, resource_kind=%s)",
+			static_cast<u32>(access),
+			resource_kind ? resource_kind : "<null>");
+
+		switch (access)
+		{
+		case rsx::metal::resource_access::read:
+		case rsx::metal::resource_access::write:
+			return;
+		}
+
+		fmt::throw_exception("Metal argument table %s binding received an invalid resource access mode: %u",
+			resource_kind ? resource_kind : "resource",
+			static_cast<u32>(access));
 	}
 
 	void track_bound_resource_usage(
@@ -376,6 +395,7 @@ namespace rsx::metal
 
 		std::lock_guard lock(m_impl->m_use_state->m_mutex);
 		validate_table_mutable(*m_impl->m_use_state, "bind a buffer");
+		validate_argument_table_resource_access(access, "buffer");
 
 		if (index >= m_impl->m_desc.max_buffers)
 		{
@@ -478,6 +498,7 @@ namespace rsx::metal
 
 		std::lock_guard lock(m_impl->m_use_state->m_mutex);
 		validate_table_mutable(*m_impl->m_use_state, "bind a texture");
+		validate_argument_table_resource_access(access, "texture");
 
 		if (index >= m_impl->m_desc.max_textures)
 		{
@@ -839,6 +860,11 @@ namespace rsx::metal
 			ensure(use_state->m_in_flight_use_count);
 			use_state->m_in_flight_use_count--;
 		});
+
+		if (use_state->m_in_flight_use_count == std::numeric_limits<u32>::max())
+		{
+			fmt::throw_exception("Metal argument table in-flight use counter overflow for table=*0x%x", handle());
+		}
 
 		use_state->m_in_flight_use_count++;
 	}

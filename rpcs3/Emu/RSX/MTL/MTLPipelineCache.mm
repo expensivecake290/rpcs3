@@ -6,6 +6,7 @@
 
 #include "Utilities/File.h"
 
+#include <limits>
 #include <utility>
 
 #import <Foundation/Foundation.h>
@@ -49,6 +50,7 @@ namespace rsx::metal
 		u64 m_archive_size = 0;
 		u64 m_archive_script_hash = 0;
 		u64 m_archive_hash = 0;
+		u32 m_archive_metadata_restore_count = 0;
 		u32 m_archive_metadata_miss_count = 0;
 		b8 m_archive_metadata_found = false;
 		b8 m_archive_metadata_invalid = false;
@@ -71,6 +73,7 @@ namespace rsx::metal
 		if (m_impl->m_cache.try_find_pipeline_archive_metadata(archive_metadata, archive_metadata_error))
 		{
 			m_impl->m_archive_metadata_found = true;
+			m_impl->m_archive_metadata_restore_count++;
 			m_impl->m_archived_pipeline_count = archive_metadata.flushed_pipeline_count;
 			m_impl->m_flushed_pipeline_count = archive_metadata.flushed_pipeline_count;
 			m_impl->m_archive_script_size = archive_metadata.script_size;
@@ -106,6 +109,12 @@ namespace rsx::metal
 	void pipeline_cache::record_pipeline_compilation()
 	{
 		rsx_log.trace("rsx::metal::pipeline_cache::record_pipeline_compilation()");
+
+		if (m_impl->m_dirty_pipeline_count == std::numeric_limits<u32>::max())
+		{
+			fmt::throw_exception("Metal pipeline cache dirty pipeline counter overflow");
+		}
+
 		m_impl->m_dirty_pipeline_count++;
 	}
 
@@ -153,6 +162,13 @@ namespace rsx::metal
 				const std::string error = archive_error ? get_ns_string([archive_error localizedDescription]) : "unknown error";
 				m_impl->m_archive_serialization_failures++;
 				fmt::throw_exception("Metal pipeline cache failed to serialize pipeline archive '%s': %s", archive_path, error);
+			}
+
+			if (m_impl->m_dirty_pipeline_count > std::numeric_limits<u32>::max() - m_impl->m_flushed_pipeline_count)
+			{
+				fmt::throw_exception("Metal pipeline cache flushed pipeline counter overflow: flushed=%u, pending=%u",
+					m_impl->m_flushed_pipeline_count,
+					m_impl->m_dirty_pipeline_count);
 			}
 
 			const u32 expected_flushed_pipeline_count = m_impl->m_flushed_pipeline_count + m_impl->m_dirty_pipeline_count;
@@ -216,6 +232,7 @@ namespace rsx::metal
 			.archive_size = m_impl->m_archive_size,
 			.archive_script_hash = m_impl->m_archive_script_hash,
 			.archive_hash = m_impl->m_archive_hash,
+			.archive_metadata_restore_count = m_impl->m_archive_metadata_restore_count,
 			.archive_metadata_miss_count = m_impl->m_archive_metadata_miss_count,
 			.archive_metadata_found = m_impl->m_archive_metadata_found,
 			.archive_metadata_invalid = m_impl->m_archive_metadata_invalid,
@@ -237,9 +254,10 @@ namespace rsx::metal
 		rsx_log.notice("Metal pipeline cache paths: script=%s, archive=%s",
 			cache_stats.script_path,
 			cache_stats.archive_path);
-		rsx_log.notice("Metal pipeline archive metadata: found=%u, invalid=%u, misses=%u, archived_pipelines=%u, script_size=0x%llx, archive_size=0x%llx, script_hash=0x%llx, archive_hash=0x%llx",
+		rsx_log.notice("Metal pipeline archive metadata: found=%u, invalid=%u, restores=%u, misses=%u, archived_pipelines=%u, script_size=0x%llx, archive_size=0x%llx, script_hash=0x%llx, archive_hash=0x%llx",
 			static_cast<u32>(cache_stats.archive_metadata_found),
 			static_cast<u32>(cache_stats.archive_metadata_invalid),
+			cache_stats.archive_metadata_restore_count,
 			cache_stats.archive_metadata_miss_count,
 			cache_stats.archived_pipeline_count,
 			cache_stats.archive_script_size,

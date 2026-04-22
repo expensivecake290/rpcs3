@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "MTLResourceState.h"
 
+#include <limits>
 #include <unordered_map>
 
 namespace rsx::metal
@@ -19,11 +20,80 @@ namespace rsx::metal
 			return previous_access == resource_access::write || next_access == resource_access::write;
 		}
 
+		void increment_counter(u32& counter, const char* counter_name)
+		{
+			if (counter == std::numeric_limits<u32>::max())
+			{
+				fmt::throw_exception("Metal resource state %s counter overflow", counter_name);
+			}
+
+			counter++;
+		}
+
+		b8 is_valid_resource_access(resource_access access)
+		{
+			switch (access)
+			{
+			case resource_access::read:
+			case resource_access::write:
+				return true;
+			}
+
+			return false;
+		}
+
+		b8 is_valid_resource_stage(resource_stage stage)
+		{
+			switch (stage)
+			{
+			case resource_stage::render:
+			case resource_stage::mesh:
+			case resource_stage::compute:
+			case resource_stage::blit:
+			case resource_stage::present:
+				return true;
+			}
+
+			return false;
+		}
+
+		b8 is_valid_resource_barrier_scope(resource_barrier_scope scope)
+		{
+			switch (scope)
+			{
+			case resource_barrier_scope::none:
+			case resource_barrier_scope::buffers:
+			case resource_barrier_scope::textures:
+			case resource_barrier_scope::render_targets:
+				return true;
+			}
+
+			return false;
+		}
+
 		void validate_resource_usage(const resource_usage& usage)
 		{
 			if (usage.resource_id == 0)
 			{
 				fmt::throw_exception("Metal resource usage tracking requires a non-zero GPU resource id");
+			}
+
+			if (!is_valid_resource_stage(usage.stage))
+			{
+				fmt::throw_exception("Metal resource usage tracking received an invalid stage: %u",
+					static_cast<u32>(usage.stage));
+			}
+
+			if (!is_valid_resource_access(usage.access))
+			{
+				fmt::throw_exception("Metal resource usage tracking received an invalid access mode: %u",
+					static_cast<u32>(usage.access));
+			}
+
+			if (!is_valid_resource_barrier_scope(usage.scope))
+			{
+				fmt::throw_exception("Metal resource usage tracking received an invalid barrier scope: %u",
+					static_cast<u32>(usage.scope));
 			}
 
 			if (usage.stage == resource_stage::present)
@@ -181,19 +251,24 @@ namespace rsx::metal
 
 		validate_resource_usage(usage);
 
-		m_impl->m_usage_count++;
+		increment_counter(m_impl->m_usage_count, "usage");
 		if (usage.access == resource_access::write)
 		{
-			m_impl->m_write_usage_count++;
+			increment_counter(m_impl->m_write_usage_count, "write usage");
 		}
 		else
 		{
-			m_impl->m_read_usage_count++;
+			increment_counter(m_impl->m_read_usage_count, "read usage");
 		}
 
 		const auto found = m_impl->m_resources.find(usage.resource_id);
 		if (found == m_impl->m_resources.end())
 		{
+			if (m_impl->m_resources.size() == std::numeric_limits<u32>::max())
+			{
+				fmt::throw_exception("Metal resource state tracked resource counter overflow");
+			}
+
 			m_impl->m_resources.emplace(usage.resource_id, resource_state
 			{
 				.m_stage = usage.stage,
@@ -229,24 +304,24 @@ namespace rsx::metal
 
 		if (barrier.required)
 		{
-			m_impl->m_barrier_count++;
+			increment_counter(m_impl->m_barrier_count, "barrier");
 
 			if (barrier.after_access == resource_access::write && barrier.before_access == resource_access::read)
 			{
-				m_impl->m_read_after_write_barrier_count++;
+				increment_counter(m_impl->m_read_after_write_barrier_count, "read-after-write barrier");
 			}
 			else if (barrier.after_access == resource_access::read && barrier.before_access == resource_access::write)
 			{
-				m_impl->m_write_after_read_barrier_count++;
+				increment_counter(m_impl->m_write_after_read_barrier_count, "write-after-read barrier");
 			}
 			else if (barrier.after_access == resource_access::write && barrier.before_access == resource_access::write)
 			{
-				m_impl->m_write_after_write_barrier_count++;
+				increment_counter(m_impl->m_write_after_write_barrier_count, "write-after-write barrier");
 			}
 
 			if (barrier.after_stage != barrier.before_stage)
 			{
-				m_impl->m_cross_stage_barrier_count++;
+				increment_counter(m_impl->m_cross_stage_barrier_count, "cross-stage barrier");
 			}
 
 			rsx_log.trace("Metal resource barrier required for resource_id=0x%x after=%s/%s before=%s/%s scope=%s",
@@ -292,7 +367,7 @@ namespace rsx::metal
 				describe_resource_access(found->second.m_access));
 		}
 
-		m_impl->m_present_boundary_count++;
+		increment_counter(m_impl->m_present_boundary_count, "present boundary");
 		rsx_log.trace("Metal present boundary tracked for resource_id=0x%x after=%s/%s before=present/read",
 			resource_id,
 			describe_resource_stage(found->second.m_stage),
@@ -327,7 +402,13 @@ namespace rsx::metal
 
 	u32 resource_state_tracker::tracked_resource_count() const
 	{
-		return static_cast<u32>(m_impl->m_resources.size());
+		const auto resource_count = m_impl->m_resources.size();
+		if (resource_count > std::numeric_limits<u32>::max())
+		{
+			fmt::throw_exception("Metal resource state tracked resource count exceeds u32 range");
+		}
+
+		return static_cast<u32>(resource_count);
 	}
 
 }

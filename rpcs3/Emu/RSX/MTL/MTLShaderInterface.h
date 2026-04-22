@@ -59,6 +59,8 @@ namespace rsx::metal
 	std::string describe_shader_interface_layout(const shader_interface_layout& layout);
 	std::string describe_shader_stage_io_layout(const shader_interface_layout& layout);
 	u32 known_pipeline_entry_requirement_mask();
+	u32 pipeline_entry_requirement_mask_for_stage(shader_stage stage);
 	void validate_pipeline_entry_requirement_mask(u32 requirement_mask);
+	void validate_pipeline_entry_requirement_mask_for_stage(shader_stage stage, u32 requirement_mask);
 	std::string describe_pipeline_entry_requirements(u32 requirement_mask);
 }

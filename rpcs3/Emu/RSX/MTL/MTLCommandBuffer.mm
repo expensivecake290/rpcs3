@@ -260,7 +260,7 @@ namespace rsx::metal
 
 		if (!residency_set_handle)
 		{
-			return;
+			fmt::throw_exception("Metal command frame residency binding requires a valid residency set");
 		}
 
 		if (@available(macOS 26.0, *))

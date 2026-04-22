@@ -3,6 +3,7 @@
 
 #import <Metal/Metal.h>
 
+#include <limits>
 #include <mutex>
 #include <unordered_map>
 
@@ -22,6 +23,26 @@ namespace
 
 		const char* text = [value UTF8String];
 		return text ? std::string(text) : std::string();
+	}
+
+	void validate_active_residency(id<MTLResidencySet> residency_set, b8 resident, const char* operation)
+	{
+		rsx_log.trace("validate_active_residency(residency_set=*0x%x, resident=%u, operation=%s)",
+			residency_set,
+			static_cast<u32>(resident),
+			operation ? operation : "<null>");
+
+		if (!residency_set)
+		{
+			fmt::throw_exception("Metal residency %s requires a valid residency set",
+				operation ? operation : "operation");
+		}
+
+		if (!resident)
+		{
+			fmt::throw_exception("Metal residency %s requires an active residency request",
+				operation ? operation : "operation");
+		}
 	}
 }
 
@@ -87,6 +108,18 @@ namespace rsx::metal
 		if (@available(macOS 26.0, *))
 		{
 			std::lock_guard lock(m_impl->m_mutex);
+
+			if (!m_impl->m_residency_set)
+			{
+				fmt::throw_exception("Metal residency request requires a valid residency set");
+			}
+
+			if (m_impl->m_resident)
+			{
+				rsx_log.trace("Metal residency request skipped because the residency set is already active");
+				return;
+			}
+
 			[m_impl->m_residency_set requestResidency];
 			m_impl->m_resident = true;
 		}
@@ -129,10 +162,16 @@ namespace rsx::metal
 		if (@available(macOS 26.0, *))
 		{
 			std::lock_guard lock(m_impl->m_mutex);
+			validate_active_residency(m_impl->m_residency_set, m_impl->m_resident, "add allocation");
 
 			auto found = m_impl->m_allocations.find(allocation_handle);
 			if (found != m_impl->m_allocations.end())
 			{
+				if (found->second == std::numeric_limits<u32>::max())
+				{
+					fmt::throw_exception("Metal residency allocation reference counter overflow for allocation=*0x%x", allocation_handle);
+				}
+
 				found->second++;
 				rsx_log.trace("Metal residency allocation already tracked: allocation=*0x%x, ref_count=%u",
 					allocation_handle, found->second);
@@ -161,6 +200,7 @@ namespace rsx::metal
 		if (@available(macOS 26.0, *))
 		{
 			std::lock_guard lock(m_impl->m_mutex);
+			validate_active_residency(m_impl->m_residency_set, m_impl->m_resident, "remove allocation");
 
 			auto found = m_impl->m_allocations.find(allocation_handle);
 			if (found == m_impl->m_allocations.end())
@@ -194,6 +234,7 @@ namespace rsx::metal
 		if (@available(macOS 26.0, *))
 		{
 			std::lock_guard lock(m_impl->m_mutex);
+			validate_active_residency(m_impl->m_residency_set, m_impl->m_resident, "commit");
 			[m_impl->m_residency_set commit];
 		}
 		else
@@ -228,6 +269,16 @@ namespace rsx::metal
 		if (@available(macOS 26.0, *))
 		{
 			std::lock_guard lock(m_impl->m_mutex);
+			if (m_impl->m_allocations.size() > std::numeric_limits<u32>::max())
+			{
+				fmt::throw_exception("Metal residency allocation count exceeds u32 range");
+			}
+
+			if (m_impl->m_residency_set.allocationCount > std::numeric_limits<u32>::max())
+			{
+				fmt::throw_exception("Metal residency set allocation count exceeds u32 range");
+			}
+
 			const u32 tracked_allocation_count = static_cast<u32>(m_impl->m_allocations.size());
 			const u32 residency_set_allocation_count = static_cast<u32>(m_impl->m_residency_set.allocationCount);
 			if (tracked_allocation_count != residency_set_allocation_count)

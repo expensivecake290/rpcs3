@@ -12,6 +12,7 @@
 #include "util/fnv_hash.hpp"
 
 #include <cstring>
+#include <limits>
 #include <string_view>
 
 #import <Foundation/Foundation.h>
@@ -110,6 +111,16 @@ namespace
 		return hash;
 	}
 
+	void increment_pipeline_counter(u32& counter, const char* counter_name)
+	{
+		if (counter == std::numeric_limits<u32>::max())
+		{
+			fmt::throw_exception("Metal pipeline state %s counter overflow", counter_name);
+		}
+
+		counter++;
+	}
+
 	u64 pipeline_source_text_hash(std::string_view source)
 	{
 		rsx_log.trace("pipeline_source_text_hash(size=0x%x)", source.size());
@@ -142,16 +153,18 @@ namespace
 			hash = append_dependency_u32(hash, library.id);
 			hash = append_dependency_u64(hash, library.source_hash);
 			hash = append_dependency_u64(hash, library.source_text_hash);
+			hash = append_dependency_u64(hash, library.dynamic_library_hash);
 			hash = append_dependency_string(hash, library.entry_point);
 			hash = append_dependency_string(hash, library.dynamic_library_path);
 			hash = append_dependency_u32(hash, library.pipeline_requirement_mask);
+			hash = append_dependency_string(hash, library.pipeline_entry_error);
 			hash = append_dependency_u32(hash, static_cast<u32>(library.pipeline_entry_available));
 		}
 
 		return static_cast<u64>(hash);
 	}
 
-	b8 pipeline_state_metadata_matches(
+	std::string pipeline_state_metadata_mismatch(
 		const rsx::metal::pipeline_state_metadata& metadata,
 		const char* pipeline_type,
 		u64 pipeline_hash,
@@ -165,19 +178,86 @@ namespace
 		u32 raster_sample_count,
 		b8 rasterization_enabled)
 	{
-		rsx_log.trace("pipeline_state_metadata_matches(pipeline_type=%s, pipeline_hash=0x%llx)", pipeline_type, pipeline_hash);
+		rsx_log.trace("pipeline_state_metadata_mismatch(pipeline_type=%s, pipeline_hash=0x%llx)", pipeline_type, pipeline_hash);
 
-		return metadata.pipeline_type == pipeline_type &&
-			metadata.pipeline_hash == pipeline_hash &&
-			metadata.vertex_source_hash == vertex_source_hash &&
-			metadata.fragment_source_hash == fragment_source_hash &&
-			metadata.object_source_hash == object_source_hash &&
-			metadata.mesh_source_hash == mesh_source_hash &&
-			metadata.linked_library_hash == linked_library_hash &&
-			metadata.linked_library_count == linked_library_count &&
-			metadata.color_pixel_format == color_pixel_format &&
-			metadata.raster_sample_count == raster_sample_count &&
-			metadata.rasterization_enabled == rasterization_enabled;
+		if (metadata.pipeline_type != pipeline_type)
+		{
+			return fmt::format("pipeline type '%s' does not match requested type '%s'",
+				metadata.pipeline_type,
+				pipeline_type);
+		}
+
+		if (metadata.pipeline_hash != pipeline_hash)
+		{
+			return fmt::format("pipeline hash 0x%llx does not match requested hash 0x%llx",
+				metadata.pipeline_hash,
+				pipeline_hash);
+		}
+
+		if (metadata.vertex_source_hash != vertex_source_hash)
+		{
+			return fmt::format("vertex source hash 0x%llx does not match requested hash 0x%llx",
+				metadata.vertex_source_hash,
+				vertex_source_hash);
+		}
+
+		if (metadata.fragment_source_hash != fragment_source_hash)
+		{
+			return fmt::format("fragment source hash 0x%llx does not match requested hash 0x%llx",
+				metadata.fragment_source_hash,
+				fragment_source_hash);
+		}
+
+		if (metadata.object_source_hash != object_source_hash)
+		{
+			return fmt::format("object source hash 0x%llx does not match requested hash 0x%llx",
+				metadata.object_source_hash,
+				object_source_hash);
+		}
+
+		if (metadata.mesh_source_hash != mesh_source_hash)
+		{
+			return fmt::format("mesh source hash 0x%llx does not match requested hash 0x%llx",
+				metadata.mesh_source_hash,
+				mesh_source_hash);
+		}
+
+		if (metadata.linked_library_hash != linked_library_hash)
+		{
+			return fmt::format("linked library hash 0x%llx does not match requested hash 0x%llx",
+				metadata.linked_library_hash,
+				linked_library_hash);
+		}
+
+		if (metadata.linked_library_count != linked_library_count)
+		{
+			return fmt::format("linked library count %u does not match requested count %u",
+				metadata.linked_library_count,
+				linked_library_count);
+		}
+
+		if (metadata.color_pixel_format != color_pixel_format)
+		{
+			return fmt::format("color pixel format %u does not match requested format %u",
+				metadata.color_pixel_format,
+				color_pixel_format);
+		}
+
+		if (metadata.raster_sample_count != raster_sample_count)
+		{
+			return fmt::format("raster sample count %u does not match requested count %u",
+				metadata.raster_sample_count,
+				raster_sample_count);
+		}
+
+		if (metadata.rasterization_enabled != rasterization_enabled)
+		{
+			return fmt::format("rasterization enabled state %u does not match requested state %u",
+				static_cast<u32>(metadata.rasterization_enabled),
+				static_cast<u32>(rasterization_enabled));
+		}
+
+		return {};
 	}
 
 	void probe_pipeline_state_metadata(
@@ -206,39 +286,45 @@ namespace
 		{
 			if (error.empty())
 			{
-				miss_count++;
+				increment_pipeline_counter(miss_count, "metadata miss");
 				rsx_log.trace("Metal %s pipeline metadata miss for pipeline=0x%llx", pipeline_type, pipeline_hash);
 			}
 			else
 			{
-				invalid_count++;
+				increment_pipeline_counter(invalid_count, "metadata invalid");
 				rsx_log.warning("Metal %s pipeline metadata is invalid for pipeline=0x%llx: %s", pipeline_type, pipeline_hash, error.c_str());
 			}
 
 			return;
 		}
 
-		if (pipeline_state_metadata_matches(
-			metadata,
-			pipeline_type,
-			pipeline_hash,
-			vertex_source_hash,
-			fragment_source_hash,
-			object_source_hash,
-			mesh_source_hash,
-			linked_library_hash,
-			linked_library_count,
-			color_pixel_format,
-			raster_sample_count,
-			rasterization_enabled))
+		if (const std::string mismatch = pipeline_state_metadata_mismatch(
+				metadata,
+				pipeline_type,
+				pipeline_hash,
+				vertex_source_hash,
+				fragment_source_hash,
+				object_source_hash,
+				mesh_source_hash,
+				linked_library_hash,
+				linked_library_count,
+				color_pixel_format,
+				raster_sample_count,
+				rasterization_enabled);
+			mismatch.empty())
 		{
-			hit_count++;
+			increment_pipeline_counter(hit_count, "metadata hit");
 			rsx_log.trace("Metal %s pipeline metadata hit for pipeline=0x%llx", pipeline_type, pipeline_hash);
 			return;
 		}
-
-		mismatch_count++;
-		rsx_log.warning("Metal %s pipeline metadata mismatch for pipeline=0x%llx; pipeline will be recompiled", pipeline_type, pipeline_hash);
+		else
+		{
+			increment_pipeline_counter(mismatch_count, "metadata mismatch");
+			rsx_log.warning("Metal %s pipeline metadata mismatch for pipeline=0x%llx: %s; pipeline will be recompiled",
+				pipeline_type,
+				pipeline_hash,
+				mismatch.c_str());
+		}
 	}
 
 	void validate_shader_source(const char* stage, const rsx::metal::render_pipeline_shader& shader)
@@ -754,7 +840,7 @@ namespace rsx::metal
 		id<MTLRenderPipelineState> cached_pipeline = [m_impl->m_render_pipelines objectForKey:key];
 		if (cached_pipeline)
 		{
-			m_impl->m_cache_hits++;
+			increment_pipeline_counter(m_impl->m_cache_hits, "render pipeline cache hit");
 
 			return make_pipeline_record(
 				desc.pipeline_hash,
@@ -838,12 +924,10 @@ namespace rsx::metal
 			{
 				const std::string message = error ? get_ns_string([error localizedDescription]) : "unknown error";
 				const std::string label = get_ns_string(pipeline_desc.label);
-				m_impl->m_pipeline_compile_failures++;
+				increment_pipeline_counter(m_impl->m_pipeline_compile_failures, "render pipeline compile failure");
 				fmt::throw_exception("Metal render pipeline compilation failed for '%s': %s", label.c_str(), message.c_str());
 			}
 
-			[m_impl->m_render_pipelines setObject:pipeline forKey:key];
-			m_impl->m_compiled_pipelines++;
 			m_impl->m_cache.store_pipeline_state_metadata(
 				"render",
 				desc.pipeline_hash,
@@ -856,6 +940,8 @@ namespace rsx::metal
 				desc.color_pixel_format,
 				desc.raster_sample_count,
 				desc.rasterization_enabled);
+			[m_impl->m_render_pipelines setObject:pipeline forKey:key];
+			increment_pipeline_counter(m_impl->m_compiled_pipelines, "compiled render pipeline");
 			m_impl->m_pipeline_cache.record_pipeline_compilation();
 
 			return make_pipeline_record(
@@ -913,7 +999,7 @@ namespace rsx::metal
 		id<MTLRenderPipelineState> cached_pipeline = [m_impl->m_mesh_pipelines objectForKey:key];
 		if (cached_pipeline)
 		{
-			m_impl->m_mesh_cache_hits++;
+			increment_pipeline_counter(m_impl->m_mesh_cache_hits, "mesh pipeline cache hit");
 
 			return make_pipeline_record(
 				desc.pipeline_hash,
@@ -1021,12 +1107,10 @@ namespace rsx::metal
 			{
 				const std::string message = error ? get_ns_string([error localizedDescription]) : "unknown error";
 				const std::string label = get_ns_string(pipeline_desc.label);
-				m_impl->m_mesh_pipeline_compile_failures++;
+				increment_pipeline_counter(m_impl->m_mesh_pipeline_compile_failures, "mesh pipeline compile failure");
 				fmt::throw_exception("Metal mesh pipeline compilation failed for '%s': %s", label.c_str(), message.c_str());
 			}
 
-			[m_impl->m_mesh_pipelines setObject:pipeline forKey:key];
-			m_impl->m_compiled_mesh_pipelines++;
 			m_impl->m_cache.store_pipeline_state_metadata(
 				"mesh",
 				desc.pipeline_hash,
@@ -1039,6 +1123,8 @@ namespace rsx::metal
 				desc.color_pixel_format,
 				desc.raster_sample_count,
 				desc.rasterization_enabled);
+			[m_impl->m_mesh_pipelines setObject:pipeline forKey:key];
+			increment_pipeline_counter(m_impl->m_compiled_mesh_pipelines, "compiled mesh pipeline");
 			m_impl->m_pipeline_cache.record_pipeline_compilation();
 
 			return make_pipeline_record(

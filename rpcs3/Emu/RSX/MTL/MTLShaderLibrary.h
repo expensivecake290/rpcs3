@@ -18,10 +18,12 @@ namespace rsx::metal
 		u32 id = 0;
 		u64 source_hash = 0;
 		u64 source_text_hash = 0;
+		u64 dynamic_library_hash = 0;
 		std::string entry_point;
 		std::string dynamic_library_path;
 		void* dynamic_library_handle = nullptr;
 		u32 pipeline_requirement_mask = 0;
+		std::string pipeline_entry_error;
 		b8 pipeline_entry_available = false;
 		b8 loaded_from_disk = false;
 	};
@@ -37,6 +39,7 @@ namespace rsx::metal
 		u32 source_metadata_invalid = 0;
 		u32 completion_metadata_misses = 0;
 		u32 completion_metadata_invalid = 0;
+		u32 library_metadata_hits = 0;
 		u32 library_metadata_misses = 0;
 		u32 library_metadata_invalid = 0;
 		u32 disk_load_failures = 0;

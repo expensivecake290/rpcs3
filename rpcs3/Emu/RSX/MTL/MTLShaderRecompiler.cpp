@@ -18,6 +18,7 @@
 #include "util/fnv_hash.hpp"
 
 #include <array>
+#include <string_view>
 
 namespace
 {
@@ -95,6 +96,70 @@ namespace
 		return static_cast<u64>(hash);
 	}
 
+	const char* helper_context_type(const char* stage)
+	{
+		rsx_log.trace("helper_context_type(stage=%s)", stage ? stage : "<null>");
+
+		if (std::string_view(stage) == "vertex")
+		{
+			return "rpcs3_mtl_vertex_context";
+		}
+
+		if (std::string_view(stage) == "fragment")
+		{
+			return "rpcs3_mtl_fragment_context";
+		}
+
+		fmt::throw_exception("Metal shader helper context validation does not support stage '%s'", stage ? stage : "<null>");
+	}
+
+	void require_helper_source_text(const char* stage, const std::string& source, std::string_view text, const char* label)
+	{
+		rsx_log.trace("require_helper_source_text(stage=%s, label=%s, text=%s)",
+			stage ? stage : "<null>",
+			label ? label : "<null>",
+			std::string(text));
+
+		if (source.find(text) == std::string::npos)
+		{
+			fmt::throw_exception("Metal %s helper MSL is missing %s '%s'",
+				stage ? stage : "<null>",
+				label ? label : "required text",
+				std::string(text));
+		}
+	}
+
+	void validate_helper_context_source(const char* stage, const std::string& entry_point, const std::string& source)
+	{
+		rsx_log.trace("validate_helper_context_source(stage=%s, entry_point=%s, size=0x%x)",
+			stage ? stage : "<null>", entry_point.c_str(), static_cast<u32>(source.size()));
+
+		const char* context_type = helper_context_type(stage);
+		require_helper_source_text(stage, source, fmt::format("struct {}\n", context_type), "context declaration");
+		require_helper_source_text(stage, source, fmt::format("void {}(thread {}& ctx)", entry_point, context_type), "helper entry signature");
+		require_helper_source_text(stage, source, "constant float4* constants;", "constant buffer member");
+		require_helper_source_text(stage, source, "#define _fetch_constant(index) ctx.constants[index]", "constant fetch binding");
+
+		if (std::string_view(stage) == "vertex")
+		{
+			require_helper_source_text(stage, source, fmt::format("float4 input[{}];", rsx::metal::shader_vertex_input_count), "vertex input array");
+			require_helper_source_text(stage, source, fmt::format("float4 output[{}];", rsx::metal::shader_vertex_output_count), "vertex output array");
+			return;
+		}
+
+		if (std::string_view(stage) == "fragment")
+		{
+			require_helper_source_text(stage, source, fmt::format("float4 input[{}];", rsx::metal::shader_fragment_input_count), "fragment input array");
+			require_helper_source_text(stage, source, fmt::format("float4 output[{}];", rsx::metal::shader_fragment_color_output_count), "fragment output array");
+			require_helper_source_text(stage, source, "float depth;", "fragment depth export member");
+			require_helper_source_text(stage, source, "bool discarded;", "fragment discard state member");
+			require_helper_source_text(stage, source, "#define _kill() do { ctx.discarded = true; return; } while (false)", "fragment discard binding");
+			return;
+		}
+
+		fmt::throw_exception("Metal shader helper context validation does not support stage '%s'", stage ? stage : "<null>");
+	}
+
 	void validate_translated_shader_source(const char* stage, const std::string& entry_point, const std::string& source)
 	{
 		rsx_log.trace("validate_translated_shader_source(stage=%s, entry_point=%s, size=0x%x)",
@@ -125,6 +190,8 @@ namespace
 		{
 			fmt::throw_exception("Metal %s shader source does not contain helper entry '%s'", stage, entry_point);
 		}
+
+		validate_helper_context_source(stage, entry_point, source);
 	}
 
 	const char* pipeline_entry_stage_suffix(rsx::metal::shader_stage stage)
@@ -150,6 +217,7 @@ namespace
 			static_cast<u32>(shader.stage), shader.id, shader.source_hash);
 
 		const char* stage = pipeline_entry_stage_suffix(shader.stage);
+		rsx::metal::validate_pipeline_entry_requirement_mask_for_stage(shader.stage, shader.pipeline_requirement_mask);
 		cache.store_pipeline_entry_metadata(
 			stage,
 			shader.id,
@@ -167,6 +235,7 @@ namespace
 			fmt::throw_exception("Metal pipeline entry metadata lookup failed after storing stage=%s, source_hash=0x%llx", stage, shader.source_hash);
 		}
 
+		rsx::metal::validate_pipeline_entry_requirement_mask_for_stage(shader.stage, metadata.requirement_mask);
 		const rsx::metal::render_pipeline_shader pipeline_shader = rsx::metal::make_render_pipeline_shader(metadata);
 		if (pipeline_shader.source_hash != shader.pipeline_source_hash ||
 			pipeline_shader.entry_point != shader.pipeline_entry_point ||
@@ -206,6 +275,7 @@ namespace
 				stage, shader.source_hash, metadata.shader_id, shader.id);
 		}
 
+		rsx::metal::validate_pipeline_entry_requirement_mask_for_stage(shader.stage, metadata.requirement_mask);
 		const rsx::metal::render_pipeline_shader pipeline_shader = rsx::metal::make_render_pipeline_shader(metadata);
 		shader.pipeline_source_hash = pipeline_shader.source_hash;
 		shader.pipeline_entry_point = pipeline_shader.entry_point;
@@ -223,11 +293,11 @@ namespace
 		return true;
 	}
 
-	b8 cached_pipeline_entry_matches_current_status(
+	std::string cached_pipeline_entry_status_mismatch(
 		const rsx::metal::translated_shader& cached_shader,
 		const rsx::metal::translated_shader& current_shader)
 	{
-		rsx_log.trace("cached_pipeline_entry_matches_current_status(stage=%u, id=%u, source_hash=0x%llx)",
+		rsx_log.trace("cached_pipeline_entry_status_mismatch(stage=%u, id=%u, source_hash=0x%llx)",
 			static_cast<u32>(cached_shader.stage), cached_shader.id, cached_shader.source_hash);
 
 		if (cached_shader.stage != current_shader.stage ||
@@ -236,21 +306,70 @@ namespace
 			fmt::throw_exception("Metal cached pipeline-entry status comparison received mismatched shader records");
 		}
 
-		if (cached_shader.pipeline_source_hash != current_shader.pipeline_source_hash ||
-			cached_shader.pipeline_entry_point != current_shader.pipeline_entry_point ||
-			cached_shader.pipeline_source != current_shader.pipeline_source ||
-			cached_shader.pipeline_cache_path != current_shader.pipeline_cache_path ||
-			cached_shader.pipeline_entry_error != current_shader.pipeline_entry_error ||
-			cached_shader.pipeline_requirement_mask != current_shader.pipeline_requirement_mask ||
-			cached_shader.pipeline_entry_available != current_shader.pipeline_entry_available)
+		if (cached_shader.pipeline_source_hash != current_shader.pipeline_source_hash)
 		{
-			rsx_log.warning("Metal pipeline entry cache stale for stage=%u, source_hash=0x%llx: cached_requirements=0x%x, current_requirements=0x%x, cached_available=%u, current_available=%u",
-				static_cast<u32>(cached_shader.stage),
-				cached_shader.source_hash,
+			return fmt::format("pipeline source hash 0x%llx does not match current hash 0x%llx",
+				cached_shader.pipeline_source_hash,
+				current_shader.pipeline_source_hash);
+		}
+
+		if (cached_shader.pipeline_entry_point != current_shader.pipeline_entry_point)
+		{
+			return fmt::format("pipeline entry point '%s' does not match current entry point '%s'",
+				cached_shader.pipeline_entry_point,
+				current_shader.pipeline_entry_point);
+		}
+
+		if (cached_shader.pipeline_source != current_shader.pipeline_source)
+		{
+			return "pipeline source text differs from current generated source";
+		}
+
+		if (cached_shader.pipeline_cache_path != current_shader.pipeline_cache_path)
+		{
+			return fmt::format("pipeline cache path '%s' does not match current path '%s'",
+				cached_shader.pipeline_cache_path,
+				current_shader.pipeline_cache_path);
+		}
+
+		if (cached_shader.pipeline_entry_error != current_shader.pipeline_entry_error)
+		{
+			return fmt::format("pipeline entry error '%s' does not match current error '%s'",
+				cached_shader.pipeline_entry_error,
+				current_shader.pipeline_entry_error);
+		}
+
+		if (cached_shader.pipeline_requirement_mask != current_shader.pipeline_requirement_mask)
+		{
+			return fmt::format("pipeline requirement mask 0x%x does not match current mask 0x%x",
 				cached_shader.pipeline_requirement_mask,
-				current_shader.pipeline_requirement_mask,
+				current_shader.pipeline_requirement_mask);
+		}
+
+		if (cached_shader.pipeline_entry_available != current_shader.pipeline_entry_available)
+		{
+			return fmt::format("pipeline availability %u does not match current availability %u",
 				static_cast<u32>(cached_shader.pipeline_entry_available),
 				static_cast<u32>(current_shader.pipeline_entry_available));
+		}
+
+		return {};
+	}
+
+	b8 cached_pipeline_entry_matches_current_status(
+		const rsx::metal::translated_shader& cached_shader,
+		const rsx::metal::translated_shader& current_shader)
+	{
+		rsx_log.trace("cached_pipeline_entry_matches_current_status(stage=%u, id=%u, source_hash=0x%llx)",
+			static_cast<u32>(cached_shader.stage), cached_shader.id, cached_shader.source_hash);
+
+		if (const std::string mismatch = cached_pipeline_entry_status_mismatch(cached_shader, current_shader);
+			!mismatch.empty())
+		{
+			rsx_log.warning("Metal pipeline entry cache stale for stage=%u, source_hash=0x%llx: %s",
+				static_cast<u32>(cached_shader.stage),
+				cached_shader.source_hash,
+				mismatch);
 			return false;
 		}
 
@@ -448,7 +567,7 @@ namespace
 		}
 
 		validate_translated_shader_source(stage_name, shader.entry_point, shader.source);
-		rsx::metal::validate_pipeline_entry_requirement_mask(shader.pipeline_requirement_mask);
+		rsx::metal::validate_pipeline_entry_requirement_mask_for_stage(shader.stage, shader.pipeline_requirement_mask);
 
 		if (shader.pipeline_entry_available)
 		{

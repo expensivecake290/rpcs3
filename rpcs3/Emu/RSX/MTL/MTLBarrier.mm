@@ -20,10 +20,10 @@ namespace rsx::metal
 			case resource_stage::blit:
 				return MTLStageBlit;
 			case resource_stage::present:
-				break;
+				fmt::throw_exception("Metal presentation stage is not valid for encoder barrier emission");
 			}
 
-			fmt::throw_exception("Metal presentation stage is not valid for encoder barrier emission");
+			fmt::throw_exception("Metal barrier emission received an invalid resource stage: %u", static_cast<u32>(stage));
 		}
 
 		MTL4VisibilityOptions to_visibility_options(resource_barrier_scope scope)
@@ -31,14 +31,14 @@ namespace rsx::metal
 			switch (scope)
 			{
 			case resource_barrier_scope::none:
-				break;
+				fmt::throw_exception("Metal required resource barrier cannot use an empty visibility scope");
 			case resource_barrier_scope::buffers:
 			case resource_barrier_scope::textures:
 			case resource_barrier_scope::render_targets:
 				return MTL4VisibilityOptionDevice;
 			}
 
-			fmt::throw_exception("Metal required resource barrier cannot use an empty visibility scope");
+			fmt::throw_exception("Metal barrier emission received an invalid visibility scope: %u", static_cast<u32>(scope));
 		}
 	}
 

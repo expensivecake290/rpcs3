@@ -59,6 +59,13 @@ namespace rsx::metal
 		constexpr u32 argument_table_mask = pipeline_requirement(pipeline_entry_requirement::argument_table_shader_binding);
 		constexpr u32 mesh_object_mask = pipeline_requirement(pipeline_entry_requirement::mesh_object_mapping);
 		constexpr u32 mesh_grid_mask = pipeline_requirement(pipeline_entry_requirement::mesh_grid_mapping);
+		constexpr u32 expected_requirement_mask = argument_table_mask | mesh_object_mask | mesh_grid_mask;
+
+		if (plan.requirement_mask != expected_requirement_mask)
+		{
+			fmt::throw_exception("Metal mesh pipeline plan requirement mask mismatch: mask=0x%x, expected=0x%x",
+				plan.requirement_mask, expected_requirement_mask);
+		}
 
 		if (plan.requires_argument_table_binding != !!(plan.requirement_mask & argument_table_mask))
 		{

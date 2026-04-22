@@ -85,9 +85,10 @@ namespace rsx::metal
 		id<MTLDrawable> drawable = (__bridge id<MTLDrawable>)drawable_handle;
 		const resource_state_stats resource_stats = frame.resource_stats();
 
-		if (drawable && !resource_stats.present_boundary_count)
+		if (drawable && resource_stats.present_boundary_count != 1)
 		{
-			fmt::throw_exception("Metal drawable submission requires a recorded present boundary");
+			fmt::throw_exception("Metal drawable submission requires exactly one recorded present boundary, got %u",
+				resource_stats.present_boundary_count);
 		}
 
 		if (!drawable && resource_stats.present_boundary_count)
@@ -104,7 +105,10 @@ namespace rsx::metal
 				command_buffers.emplace_back((__bridge id<MTL4CommandBuffer>)command_buffer_handle);
 			}
 
-			ensure(!command_buffers.empty());
+			if (command_buffers.empty())
+			{
+				fmt::throw_exception("Metal command queue submission requires at least one ended command buffer");
+			}
 
 			const u64 signal_value = frame.arm_completion_signal();
 

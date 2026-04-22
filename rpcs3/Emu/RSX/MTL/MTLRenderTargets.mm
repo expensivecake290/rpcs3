@@ -42,6 +42,7 @@ namespace rsx::metal
 			fmt::throw_exception("Metal drawable render target requires a non-zero size");
 		}
 
+		frame.track_object(color_texture.allocation_handle());
 		track_heap_resource_use(frame, color_texture.heap_resource_usage_info());
 		m_impl->m_color_barrier = frame.track_resource_usage(resource_usage
 		{

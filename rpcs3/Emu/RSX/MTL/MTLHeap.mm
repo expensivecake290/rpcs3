@@ -6,6 +6,7 @@
 #import <Metal/Metal.h>
 
 #include <algorithm>
+#include <limits>
 #include <mutex>
 #include <vector>
 
@@ -37,6 +38,36 @@ namespace
 
 		return (options & MTLResourceStorageModeMask) == MTLResourceStorageModePrivate &&
 			(options & MTLResourceHazardTrackingModeMask) == MTLResourceHazardTrackingModeUntracked;
+	}
+
+	u32 checked_u32_count(std::size_t count, const char* counter_name)
+	{
+		if (count > static_cast<std::size_t>(std::numeric_limits<u32>::max()))
+		{
+			fmt::throw_exception("Metal heap %s count exceeds u32 range", counter_name);
+		}
+
+		return static_cast<u32>(count);
+	}
+
+	void increment_counter(u32& counter, const char* counter_name)
+	{
+		if (counter == std::numeric_limits<u32>::max())
+		{
+			fmt::throw_exception("Metal heap %s counter overflow", counter_name);
+		}
+
+		counter++;
+	}
+
+	void add_counter(u32& counter, u32 value, const char* counter_name)
+	{
+		if (value > std::numeric_limits<u32>::max() - counter)
+		{
+			fmt::throw_exception("Metal heap %s counter overflow", counter_name);
+		}
+
+		counter += value;
 	}
 
 	MTLHeapDescriptor* make_private_heap_descriptor(u64 heap_size)
@@ -87,6 +118,29 @@ namespace rsx::metal
 		{
 			return record.m_resource_handle == resource_handle;
 		});
+	}
+
+	void register_heap_resource(std::vector<heap_resource_record>& resources, void* resource_handle, const char* resource_kind)
+	{
+		rsx_log.trace("register_heap_resource(resource_handle=*0x%x, resource_kind=%s)",
+			resource_handle,
+			resource_kind ? resource_kind : "<null>");
+
+		if (!resource_handle)
+		{
+			fmt::throw_exception("Metal heap %s allocation returned a null resource handle",
+				resource_kind ? resource_kind : "resource");
+		}
+
+		if (find_resource(resources, resource_handle) != resources.end())
+		{
+			fmt::throw_exception("Metal heap %s allocation returned a duplicate live resource handle: resource=*0x%x",
+				resource_kind ? resource_kind : "resource",
+				resource_handle);
+		}
+
+		checked_u32_count(resources.size() + 1, "live resource");
+		resources.push_back({ .m_resource_handle = resource_handle });
 	}
 
 	void make_resource_aliasable(id<MTLResource> resource)
@@ -186,8 +240,8 @@ namespace rsx::metal
 					buffer.label = make_ns_string(label);
 				}
 
-				m_impl->m_buffer_allocations++;
-				m_impl->m_resources.push_back({ .m_resource_handle = (__bridge void*)buffer });
+				increment_counter(m_impl->m_buffer_allocations, "buffer allocation");
+				register_heap_resource(m_impl->m_resources, (__bridge void*)buffer, "buffer");
 
 				return
 				{
@@ -209,7 +263,7 @@ namespace rsx::metal
 				fmt::throw_exception("Metal private buffer heap allocation failed for heap_size=0x%llx", heap_size);
 			}
 
-			heap.label = make_ns_string(fmt::format("RPCS3 Metal private resource heap %u", static_cast<u32>(m_impl->m_heaps.size())));
+			heap.label = make_ns_string(fmt::format("RPCS3 Metal private resource heap %u", checked_u32_count(m_impl->m_heaps.size(), "heap")));
 
 			id<MTLBuffer> buffer = [heap newBufferWithLength:static_cast<NSUInteger>(size) options:options];
 			if (!buffer)
@@ -223,8 +277,8 @@ namespace rsx::metal
 			}
 
 			m_impl->m_heaps.push_back({ heap });
-			m_impl->m_buffer_allocations++;
-			m_impl->m_resources.push_back({ .m_resource_handle = (__bridge void*)buffer });
+			increment_counter(m_impl->m_buffer_allocations, "buffer allocation");
+			register_heap_resource(m_impl->m_resources, (__bridge void*)buffer, "buffer");
 
 			return
 			{
@@ -289,8 +343,8 @@ namespace rsx::metal
 					texture.label = make_ns_string(label);
 				}
 
-				m_impl->m_texture_allocations++;
-				m_impl->m_resources.push_back({ .m_resource_handle = (__bridge void*)texture });
+				increment_counter(m_impl->m_texture_allocations, "texture allocation");
+				register_heap_resource(m_impl->m_resources, (__bridge void*)texture, "texture");
 
 				return
 				{
@@ -311,7 +365,7 @@ namespace rsx::metal
 				fmt::throw_exception("Metal private texture heap allocation failed for heap_size=0x%llx", heap_size);
 			}
 
-			heap.label = make_ns_string(fmt::format("RPCS3 Metal private resource heap %u", static_cast<u32>(m_impl->m_heaps.size())));
+			heap.label = make_ns_string(fmt::format("RPCS3 Metal private resource heap %u", checked_u32_count(m_impl->m_heaps.size(), "heap")));
 
 			id<MTLTexture> texture = [heap newTextureWithDescriptor:texture_desc];
 			if (!texture)
@@ -325,8 +379,8 @@ namespace rsx::metal
 			}
 
 			m_impl->m_heaps.push_back({ heap });
-			m_impl->m_texture_allocations++;
-			m_impl->m_resources.push_back({ .m_resource_handle = (__bridge void*)texture });
+			increment_counter(m_impl->m_texture_allocations, "texture allocation");
+			register_heap_resource(m_impl->m_resources, (__bridge void*)texture, "texture");
 
 			return
 			{
@@ -365,7 +419,7 @@ namespace rsx::metal
 				fmt::throw_exception("Metal heap resource usage tracking received a retired resource");
 			}
 
-			found->m_active_uses++;
+			increment_counter(found->m_active_uses, "resource active-use");
 		}
 
 		frame.track_object(resource_handle);
@@ -393,7 +447,7 @@ namespace rsx::metal
 
 				retained_resource_handle = found->m_retained_resource_handle;
 				m_impl->m_resources.erase(found);
-				m_impl->m_aliasable_resources++;
+				increment_counter(m_impl->m_aliasable_resources, "aliasable resource");
 			}
 
 			if (retained_resource_handle)
@@ -440,7 +494,7 @@ namespace rsx::metal
 
 			immediate_resource = (__bridge id<MTLResource>)resource_handle;
 			m_impl->m_resources.erase(found);
-			m_impl->m_aliasable_resources++;
+			increment_counter(m_impl->m_aliasable_resources, "aliasable resource");
 		}
 
 		make_resource_aliasable(immediate_resource);
@@ -454,20 +508,20 @@ namespace rsx::metal
 
 		heap_manager_stats result =
 		{
-			.heap_count = static_cast<u32>(m_impl->m_heaps.size()),
+			.heap_count = checked_u32_count(m_impl->m_heaps.size(), "heap"),
 			.buffer_allocation_count = m_impl->m_buffer_allocations,
 			.texture_allocation_count = m_impl->m_texture_allocations,
-			.live_resource_count = static_cast<u32>(m_impl->m_resources.size()),
+			.live_resource_count = checked_u32_count(m_impl->m_resources.size(), "live resource"),
 			.aliasable_resource_count = m_impl->m_aliasable_resources,
 		};
 
 		for (const heap_resource_record& record : m_impl->m_resources)
 		{
-			result.active_resource_use_count += record.m_active_uses;
+			add_counter(result.active_resource_use_count, record.m_active_uses, "active resource use");
 
 			if (record.m_retired)
 			{
-				result.pending_aliasable_resource_count++;
+				increment_counter(result.pending_aliasable_resource_count, "pending aliasable resource");
 			}
 		}
 

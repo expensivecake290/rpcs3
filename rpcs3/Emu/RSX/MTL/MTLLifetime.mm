@@ -3,6 +3,8 @@
 
 #import <Foundation/Foundation.h>
 
+#include <limits>
+
 namespace rsx::metal
 {
 	struct lifetime_tracker::lifetime_tracker_impl
@@ -35,6 +37,11 @@ namespace rsx::metal
 			return;
 		}
 
+		if ([m_impl->m_objects count] >= static_cast<NSUInteger>(std::numeric_limits<u32>::max()))
+		{
+			fmt::throw_exception("Metal lifetime tracker object count overflow for frame %u", m_impl->m_frame_index);
+		}
+
 		id object = (__bridge id)object_handle;
 		[m_impl->m_objects addObject:object];
 	}
@@ -47,6 +54,12 @@ namespace rsx::metal
 
 	u32 lifetime_tracker::count() const
 	{
-		return static_cast<u32>([m_impl->m_objects count]);
+		const NSUInteger object_count = [m_impl->m_objects count];
+		if (object_count > static_cast<NSUInteger>(std::numeric_limits<u32>::max()))
+		{
+			fmt::throw_exception("Metal lifetime tracker object count exceeds u32 range for frame %u", m_impl->m_frame_index);
+		}
+
+		return static_cast<u32>(object_count);
 	}
 }

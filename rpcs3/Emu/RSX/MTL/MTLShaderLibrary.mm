@@ -11,6 +11,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <limits>
 #include <string_view>
 #include <unordered_map>
 
@@ -35,6 +36,16 @@ namespace
 	NSURL* make_file_url(const std::string& path)
 	{
 		return [NSURL fileURLWithPath:make_ns_string(path)];
+	}
+
+	void increment_shader_library_counter(u32& counter, const char* counter_name)
+	{
+		if (counter == std::numeric_limits<u32>::max())
+		{
+			fmt::throw_exception("Metal shader library cache %s counter overflow", counter_name);
+		}
+
+		counter++;
 	}
 
 	const char* stage_suffix(rsx::metal::shader_stage stage)
@@ -121,15 +132,17 @@ namespace
 	rsx::metal::shader_library_record make_shader_library_record(
 		const rsx::metal::translated_shader& shader,
 		u64 source_text_hash,
+		u64 dynamic_library_hash,
 		const std::string& library_path,
 		id<MTLDynamicLibrary> dynamic_library,
 		b8 loaded_from_disk)
 	{
-		rsx_log.trace("make_shader_library_record(stage=%u, id=%u, source_hash=0x%llx, source_text_hash=0x%llx, library_path=%s, loaded_from_disk=%u)",
+		rsx_log.trace("make_shader_library_record(stage=%u, id=%u, source_hash=0x%llx, source_text_hash=0x%llx, dynamic_library_hash=0x%llx, library_path=%s, loaded_from_disk=%u)",
 			static_cast<u32>(shader.stage),
 			shader.id,
 			shader.source_hash,
 			source_text_hash,
+			dynamic_library_hash,
 			library_path.c_str(),
 			static_cast<u32>(loaded_from_disk));
 
@@ -139,10 +152,12 @@ namespace
 			.id = shader.id,
 			.source_hash = shader.source_hash,
 			.source_text_hash = source_text_hash,
+			.dynamic_library_hash = dynamic_library_hash,
 			.entry_point = shader.entry_point,
 			.dynamic_library_path = library_path,
 			.dynamic_library_handle = (__bridge void*)dynamic_library,
 			.pipeline_requirement_mask = shader.pipeline_requirement_mask,
+			.pipeline_entry_error = shader.pipeline_entry_error,
 			.pipeline_entry_available = shader.pipeline_entry_available,
 			.loaded_from_disk = loaded_from_disk,
 		};
@@ -155,12 +170,13 @@ namespace
 		const rsx::metal::shader_library_record& record,
 		const rsx::metal::translated_shader& shader,
 		u64 source_text_hash,
+		u64 dynamic_library_hash,
 		const std::string& library_path,
 		b8 loaded_from_disk,
 		std::string& error)
 	{
-		rsx_log.trace("shader_library_record_matches_request(stage=%u, id=%u, source_hash=0x%llx, library_path=%s)",
-			static_cast<u32>(shader.stage), shader.id, shader.source_hash, library_path.c_str());
+		rsx_log.trace("shader_library_record_matches_request(stage=%u, id=%u, source_hash=0x%llx, dynamic_library_hash=0x%llx, library_path=%s)",
+			static_cast<u32>(shader.stage), shader.id, shader.source_hash, dynamic_library_hash, library_path.c_str());
 
 		error.clear();
 		rsx::metal::validate_shader_library_record(record, true);
@@ -189,6 +205,14 @@ namespace
 			return false;
 		}
 
+		if (record.dynamic_library_hash != dynamic_library_hash)
+		{
+			error = fmt::format("dynamic library hash mismatch: cached=0x%llx, requested=0x%llx",
+				record.dynamic_library_hash,
+				dynamic_library_hash);
+			return false;
+		}
+
 		if (record.entry_point != shader.entry_point)
 		{
 			error = fmt::format("entry point mismatch: cached=%s, requested=%s",
@@ -206,11 +230,14 @@ namespace
 		}
 
 		if (record.pipeline_requirement_mask != shader.pipeline_requirement_mask ||
+			record.pipeline_entry_error != shader.pipeline_entry_error ||
 			record.pipeline_entry_available != shader.pipeline_entry_available)
 		{
-			error = fmt::format("pipeline entry state mismatch: cached_requirements=0x%x, requested_requirements=0x%x, cached_available=%u, requested_available=%u",
+			error = fmt::format("pipeline entry state mismatch: cached_requirements=0x%x, requested_requirements=0x%x, cached_error=%s, requested_error=%s, cached_available=%u, requested_available=%u",
 				record.pipeline_requirement_mask,
 				shader.pipeline_requirement_mask,
+				record.pipeline_entry_error,
+				shader.pipeline_entry_error,
 				static_cast<u32>(record.pipeline_entry_available),
 				static_cast<u32>(shader.pipeline_entry_available));
 			return false;
@@ -254,6 +281,7 @@ namespace rsx::metal
 		u32 m_source_metadata_invalid = 0;
 		u32 m_completion_metadata_misses = 0;
 		u32 m_completion_metadata_invalid = 0;
+		u32 m_library_metadata_hits = 0;
 		u32 m_library_metadata_misses = 0;
 		u32 m_library_metadata_invalid = 0;
 		u32 m_disk_load_failures = 0;
@@ -311,6 +339,11 @@ namespace rsx::metal
 			fmt::throw_exception("Metal shader library record requires a non-zero source text hash");
 		}
 
+		if (!record.dynamic_library_hash)
+		{
+			fmt::throw_exception("Metal shader library record requires a non-zero dynamic library hash");
+		}
+
 		if (record.entry_point.empty())
 		{
 			fmt::throw_exception("Metal shader library record requires an entry point");
@@ -326,18 +359,19 @@ namespace rsx::metal
 			fmt::throw_exception("Metal shader library record '%s' requires a dynamic library handle", record.dynamic_library_path.c_str());
 		}
 
-		validate_pipeline_entry_requirement_mask(record.pipeline_requirement_mask);
+		validate_pipeline_entry_requirement_mask_for_stage(record.stage, record.pipeline_requirement_mask);
 
-		if (record.pipeline_entry_available && record.pipeline_requirement_mask)
+		if (record.pipeline_entry_available && (record.pipeline_requirement_mask || !record.pipeline_entry_error.empty()))
 		{
-			fmt::throw_exception("Metal shader library record '%s' is available with unsatisfied pipeline requirements: 0x%x",
+			fmt::throw_exception("Metal shader library record '%s' is available with gated pipeline state: requirements=0x%x, error=%s",
 				record.dynamic_library_path.c_str(),
-				record.pipeline_requirement_mask);
+				record.pipeline_requirement_mask,
+				record.pipeline_entry_error);
 		}
 
-		if (!record.pipeline_entry_available && !record.pipeline_requirement_mask)
+		if (!record.pipeline_entry_available && (!record.pipeline_requirement_mask || record.pipeline_entry_error.empty()))
 		{
-			fmt::throw_exception("Metal shader library record '%s' is gated without a requirement mask", record.dynamic_library_path.c_str());
+			fmt::throw_exception("Metal shader library record '%s' is gated without requirements or a diagnostic reason", record.dynamic_library_path.c_str());
 		}
 	}
 
@@ -348,14 +382,16 @@ namespace rsx::metal
 
 		validate_shader_library_record(record, false);
 
-		return fmt::format("stage=%s, id=%u, source_hash=0x%llx, source_text_hash=0x%llx, entry=%s, path=%s, requirements=%s, available=%u, disk=%u",
+		return fmt::format("stage=%s, id=%u, source_hash=0x%llx, source_text_hash=0x%llx, dynamic_library_hash=0x%llx, entry=%s, path=%s, requirements=%s, error=%s, available=%u, disk=%u",
 			stage_suffix(record.stage),
 			record.id,
 			record.source_hash,
 			record.source_text_hash,
+			record.dynamic_library_hash,
 			record.entry_point.c_str(),
 			record.dynamic_library_path.c_str(),
 			describe_pipeline_entry_requirements(record.pipeline_requirement_mask).c_str(),
+			record.pipeline_entry_error.c_str(),
 			static_cast<u32>(record.pipeline_entry_available),
 			static_cast<u32>(record.loaded_from_disk));
 	}
@@ -375,9 +411,11 @@ namespace rsx::metal
 			fmt::throw_exception("Metal dynamic library compilation requires a shader entry point name");
 		}
 
-		if (shader.pipeline_entry_available && shader.pipeline_requirement_mask)
+		validate_pipeline_entry_requirement_mask_for_stage(shader.stage, shader.pipeline_requirement_mask);
+
+		if (shader.pipeline_entry_available && (shader.pipeline_requirement_mask || !shader.pipeline_entry_error.empty()))
 		{
-			fmt::throw_exception("Metal dynamic library cache received an available pipeline entry with unsatisfied requirements");
+			fmt::throw_exception("Metal dynamic library cache received an available pipeline entry with gated state");
 		}
 
 		if (!shader.pipeline_entry_available)
@@ -399,12 +437,12 @@ namespace rsx::metal
 
 		if (id<MTLDynamicLibrary> cached_library = [m_impl->m_dynamic_libraries objectForKey:key])
 		{
-			m_impl->m_memory_hits++;
+			increment_shader_library_counter(m_impl->m_memory_hits, "memory hit");
 			const b8 loaded_from_disk = [m_impl->m_disk_loaded_libraries containsObject:key];
 			auto record_it = m_impl->m_library_records.find(library_path);
 			if (record_it == m_impl->m_library_records.end())
 			{
-				m_impl->m_memory_validation_failures++;
+				increment_shader_library_counter(m_impl->m_memory_validation_failures, "memory validation failure");
 				fmt::throw_exception("Metal dynamic library memory cache missing record for '%s'", library_path);
 			}
 
@@ -412,9 +450,9 @@ namespace rsx::metal
 			record.dynamic_library_handle = (__bridge void*)cached_library;
 
 			std::string validation_error;
-			if (!shader_library_record_matches_request(record, shader, source_text_hash, library_path, loaded_from_disk, validation_error))
+			if (!shader_library_record_matches_request(record, shader, source_text_hash, record.dynamic_library_hash, library_path, loaded_from_disk, validation_error))
 			{
-				m_impl->m_memory_validation_failures++;
+				increment_shader_library_counter(m_impl->m_memory_validation_failures, "memory validation failure");
 				fmt::throw_exception("Metal dynamic library memory cache record mismatch for '%s': %s",
 					library_path,
 					validation_error);
@@ -433,13 +471,13 @@ namespace rsx::metal
 			{
 				if (source_metadata_error.empty())
 				{
-					m_impl->m_source_metadata_misses++;
+					increment_shader_library_counter(m_impl->m_source_metadata_misses, "source metadata miss");
 					rsx_log.warning("Metal dynamic library source metadata miss for stage=%s, source_hash=0x%llx, entry=%s",
 						stage, shader.source_hash, shader.entry_point.c_str());
 				}
 				else
 				{
-					m_impl->m_source_metadata_invalid++;
+					increment_shader_library_counter(m_impl->m_source_metadata_invalid, "source metadata invalid");
 					rsx_log.warning("Metal dynamic library source metadata for stage=%s, source_hash=0x%llx is unusable: %s",
 						stage,
 						shader.source_hash,
@@ -453,13 +491,13 @@ namespace rsx::metal
 			{
 				if (completion_metadata_error.empty())
 				{
-					m_impl->m_completion_metadata_misses++;
+					increment_shader_library_counter(m_impl->m_completion_metadata_misses, "completion metadata miss");
 					rsx_log.warning("Metal dynamic library completion metadata miss for stage=%s, source_hash=0x%llx, entry=%s",
 						stage, shader.source_hash, shader.entry_point.c_str());
 				}
 				else
 				{
-					m_impl->m_completion_metadata_invalid++;
+					increment_shader_library_counter(m_impl->m_completion_metadata_invalid, "completion metadata invalid");
 					rsx_log.warning("Metal dynamic library completion metadata for stage=%s, source_hash=0x%llx is unusable: %s",
 						stage,
 						shader.source_hash,
@@ -476,7 +514,7 @@ namespace rsx::metal
 
 			if (fs::stat_t library_stat{}; fs::get_stat(library_path, library_stat) && !library_stat.is_directory && library_stat.size)
 			{
-				m_impl->m_disk_probes++;
+				increment_shader_library_counter(m_impl->m_disk_probes, "disk probe");
 
 				shader_library_metadata metadata;
 				std::string metadata_error;
@@ -486,32 +524,34 @@ namespace rsx::metal
 						source_text_hash,
 						shader.entry_point,
 						library_path,
+						shader.pipeline_entry_error,
 						shader.pipeline_requirement_mask,
 						shader.pipeline_entry_available,
 						metadata,
 						metadata_error))
 				{
+					increment_shader_library_counter(m_impl->m_library_metadata_hits, "library metadata hit");
 					NSError* load_error = nil;
 					dynamic_library = [compiler newDynamicLibraryWithURL:make_file_url(library_path) error:&load_error];
 					if (!dynamic_library)
 					{
 						const std::string error = load_error ? get_ns_string([load_error localizedDescription]) : "unknown error";
-						m_impl->m_disk_load_failures++;
+						increment_shader_library_counter(m_impl->m_disk_load_failures, "disk load failure");
 						rsx_log.warning("Metal dynamic library cache miss for '%s': %s", library_path, error);
 					}
 					else
 					{
-						[m_impl->m_dynamic_libraries setObject:dynamic_library forKey:key];
-						[m_impl->m_disk_loaded_libraries addObject:key];
-						m_impl->m_loaded_libraries++;
-
 						shader_library_record record = make_shader_library_record(
 							shader,
 							source_text_hash,
+							metadata.library_hash,
 							library_path,
 							dynamic_library,
 							true);
+						[m_impl->m_dynamic_libraries setObject:dynamic_library forKey:key];
+						[m_impl->m_disk_loaded_libraries addObject:key];
 						m_impl->m_library_records[library_path] = record;
+						increment_shader_library_counter(m_impl->m_loaded_libraries, "loaded library");
 						return record;
 					}
 				}
@@ -519,12 +559,12 @@ namespace rsx::metal
 				{
 					if (metadata_error.empty())
 					{
-						m_impl->m_library_metadata_misses++;
+						increment_shader_library_counter(m_impl->m_library_metadata_misses, "library metadata miss");
 						rsx_log.warning("Metal dynamic library cache metadata miss for '%s'", library_path);
 					}
 					else
 					{
-						m_impl->m_library_metadata_invalid++;
+						increment_shader_library_counter(m_impl->m_library_metadata_invalid, "library metadata invalid");
 						rsx_log.warning("Metal dynamic library cache metadata for '%s' is unusable: %s",
 							library_path,
 							metadata_error.c_str());
@@ -533,7 +573,7 @@ namespace rsx::metal
 			}
 			else
 			{
-				m_impl->m_disk_file_misses++;
+				increment_shader_library_counter(m_impl->m_disk_file_misses, "disk file miss");
 				rsx_log.trace("Metal dynamic library disk cache has no file for '%s'", library_path);
 			}
 
@@ -556,7 +596,7 @@ namespace rsx::metal
 			if (!library)
 			{
 				const std::string error = library_error ? get_ns_string([library_error localizedDescription]) : "unknown error";
-				m_impl->m_source_compile_failures++;
+				increment_shader_library_counter(m_impl->m_source_compile_failures, "source compile failure");
 				fmt::throw_exception("Metal dynamic library source compilation failed for '%s': %s", shader.entry_point, error);
 			}
 
@@ -565,7 +605,7 @@ namespace rsx::metal
 			if (!dynamic_library)
 			{
 				const std::string error = dynamic_library_error ? get_ns_string([dynamic_library_error localizedDescription]) : "unknown error";
-				m_impl->m_dynamic_library_failures++;
+				increment_shader_library_counter(m_impl->m_dynamic_library_failures, "dynamic library failure");
 				fmt::throw_exception("Metal dynamic library creation failed for '%s': %s", shader.entry_point, error);
 			}
 
@@ -573,7 +613,7 @@ namespace rsx::metal
 			if (![dynamic_library serializeToURL:make_file_url(library_path) error:&serialize_error])
 			{
 				const std::string error = serialize_error ? get_ns_string([serialize_error localizedDescription]) : "unknown error";
-				m_impl->m_serialization_failures++;
+				increment_shader_library_counter(m_impl->m_serialization_failures, "serialization failure");
 				fmt::throw_exception("Metal dynamic library serialization failed for '%s': %s", library_path, error);
 			}
 
@@ -584,19 +624,35 @@ namespace rsx::metal
 				source_text_hash,
 				shader.entry_point,
 				library_path,
+				shader.pipeline_entry_error,
 				shader.pipeline_requirement_mask,
 				shader.pipeline_entry_available);
 
-			[m_impl->m_dynamic_libraries setObject:dynamic_library forKey:key];
-			m_impl->m_compiled_libraries++;
+			shader_library_metadata metadata;
+			if (!m_impl->m_cache.find_shader_library_metadata(
+				stage,
+				shader.source_hash,
+				source_text_hash,
+				shader.entry_point,
+				library_path,
+				shader.pipeline_entry_error,
+				shader.pipeline_requirement_mask,
+				shader.pipeline_entry_available,
+				metadata))
+			{
+				fmt::throw_exception("Metal dynamic library metadata lookup failed after compiling '%s'", library_path);
+			}
 
 			shader_library_record record = make_shader_library_record(
 				shader,
 				source_text_hash,
+				metadata.library_hash,
 				library_path,
 				dynamic_library,
 				false);
+			[m_impl->m_dynamic_libraries setObject:dynamic_library forKey:key];
 			m_impl->m_library_records[library_path] = record;
+			increment_shader_library_counter(m_impl->m_compiled_libraries, "compiled library");
 			return record;
 		}
 
@@ -618,6 +674,7 @@ namespace rsx::metal
 			.source_metadata_invalid = m_impl->m_source_metadata_invalid,
 			.completion_metadata_misses = m_impl->m_completion_metadata_misses,
 			.completion_metadata_invalid = m_impl->m_completion_metadata_invalid,
+			.library_metadata_hits = m_impl->m_library_metadata_hits,
 			.library_metadata_misses = m_impl->m_library_metadata_misses,
 			.library_metadata_invalid = m_impl->m_library_metadata_invalid,
 			.disk_load_failures = m_impl->m_disk_load_failures,
@@ -656,11 +713,12 @@ namespace rsx::metal
 				cache_stats.disk_loaded_library_count,
 				cache_stats.retained_libraries);
 		}
-		rsx_log.notice("Metal dynamic shader library cache misses: source_metadata=%u, source_metadata_invalid=%u, completion_metadata=%u, completion_metadata_invalid=%u, library_metadata=%u, library_metadata_invalid=%u, disk_load_failures=%u",
+		rsx_log.notice("Metal dynamic shader library cache metadata: source_misses=%u, source_invalid=%u, completion_misses=%u, completion_invalid=%u, library_hits=%u, library_misses=%u, library_invalid=%u, disk_load_failures=%u",
 			cache_stats.source_metadata_misses,
 			cache_stats.source_metadata_invalid,
 			cache_stats.completion_metadata_misses,
 			cache_stats.completion_metadata_invalid,
+			cache_stats.library_metadata_hits,
 			cache_stats.library_metadata_misses,
 			cache_stats.library_metadata_invalid,
 			cache_stats.disk_load_failures);
