@@ -3,6 +3,8 @@
 #include "game_list.h"
 #include "game_list_actions.h"
 #include "custom_dock_widget.h"
+#include "iso_integrity.h"
+
 #include "Utilities/lockless.h"
 #include "Utilities/mutex.h"
 #include "util/auto_typemap.hpp"
@@ -54,6 +56,7 @@ public:
 
 	void SetShowHidden(bool show);
 
+	iso_integrity* GetIsoIntegrity() const { return m_iso_integrity; }
 	game_compatibility* GetGameCompatibility() const { return ensure(m_game_compat); }
 	config_database* GetConfigDatabase() const { return ensure(m_config_db); }
 	const std::vector<game_info>& GetGameInfo() const { return m_game_data; }
@@ -153,6 +156,7 @@ private:
 
 	// Game List
 	game_list_table* m_game_list = nullptr;
+	iso_integrity* m_iso_integrity = nullptr;
 	game_compatibility* m_game_compat = nullptr;
 	config_database* m_config_db = nullptr;
 	progress_dialog* m_progress_dialog = nullptr;
