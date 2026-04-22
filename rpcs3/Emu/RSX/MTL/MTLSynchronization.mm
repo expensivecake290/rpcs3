@@ -58,17 +58,27 @@ namespace rsx::metal
 	u64 shared_event::allocate_signal_value()
 	{
 		const u64 value = ++m_impl->m_next_value;
-		rsx_log.trace("rsx::metal::shared_event::allocate_signal_value(value=0x%x)", value);
+		rsx_log.trace("rsx::metal::shared_event::allocate_signal_value(value=0x%llx)", value);
+		if (!value)
+		{
+			fmt::throw_exception("Metal shared event signal value overflowed");
+		}
+
 		return value;
 	}
 
 	void shared_event::signal_queue(void* queue_handle, u64 value) const
 	{
-		rsx_log.trace("rsx::metal::shared_event::signal_queue(queue_handle=*0x%x, value=0x%x)", queue_handle, value);
+		rsx_log.trace("rsx::metal::shared_event::signal_queue(queue_handle=*0x%x, value=0x%llx)", queue_handle, value);
 
 		if (!queue_handle)
 		{
 			fmt::throw_exception("Metal shared event signal requires a valid command queue");
+		}
+
+		if (!value)
+		{
+			fmt::throw_exception("Metal shared event signal requires a non-zero value");
 		}
 
 		if (@available(macOS 26.0, *))
@@ -84,11 +94,16 @@ namespace rsx::metal
 
 	void shared_event::notify(u64 value, std::function<void(u64)> callback) const
 	{
-		rsx_log.trace("rsx::metal::shared_event::notify(value=0x%x)", value);
+		rsx_log.trace("rsx::metal::shared_event::notify(value=0x%llx)", value);
 
 		if (!callback)
 		{
 			fmt::throw_exception("Metal shared event notification requires a callback");
+		}
+
+		if (!value)
+		{
+			fmt::throw_exception("Metal shared event notification requires a non-zero value");
 		}
 
 		if (@available(macOS 26.0, *))

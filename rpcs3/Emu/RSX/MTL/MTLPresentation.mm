@@ -1,7 +1,6 @@
 #include "stdafx.h"
 #include "MTLPresentation.h"
 
-#include "MTLBarrier.h"
 #include "MTLRenderTargets.h"
 #include "MTLTexture.h"
 
@@ -93,23 +92,7 @@ namespace rsx::metal
 		texture drawable_texture((__bridge void*)drawable.texture);
 		frame.track_object(drawable_texture.handle());
 
-		drawable_render_target render_target(frame,
-			drawable_texture,
-			drawable_texture.width(),
-			drawable_texture.height(),
-			{ red, green, blue, alpha });
-
-		id<MTL4CommandBuffer> command_buffer = (__bridge id<MTL4CommandBuffer>)frame.command_buffer_handle();
-		id<MTL4RenderCommandEncoder> encoder = [command_buffer renderCommandEncoderWithDescriptor:
-			(__bridge MTL4RenderPassDescriptor*)render_target.render_pass_descriptor_handle()];
-
-		if (!encoder)
-		{
-			fmt::throw_exception("Metal failed to create render command encoder for presentation clear");
-		}
-
-		encode_consumer_barrier((__bridge void*)encoder, render_target.color_barrier());
-		[encoder endEncoding];
+		encode_clear_color_target(frame, drawable_texture, { red, green, blue, alpha });
 		frame.track_present_boundary(drawable_texture.resource_id());
 		frame.end();
 		queue.submit_frame(frame, (__bridge void*)drawable);

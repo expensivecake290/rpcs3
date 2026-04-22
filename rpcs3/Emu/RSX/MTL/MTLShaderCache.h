@@ -139,6 +139,7 @@ namespace rsx::metal
 		shader_source_metadata load_shader_source_metadata(const std::string& path) const;
 		b8 find_shader_source_metadata(
 			const char* stage,
+			u32 shader_id,
 			u64 source_hash,
 			u64 source_text_hash,
 			const std::string& entry_point,
@@ -146,6 +147,7 @@ namespace rsx::metal
 			shader_source_metadata& metadata) const;
 		b8 try_find_shader_source_metadata(
 			const char* stage,
+			u32 shader_id,
 			u64 source_hash,
 			u64 source_text_hash,
 			const std::string& entry_point,
@@ -182,6 +184,7 @@ namespace rsx::metal
 		shader_library_metadata load_shader_library_metadata(const std::string& path) const;
 		b8 find_shader_library_metadata(
 			const char* stage,
+			u32 shader_id,
 			u64 source_hash,
 			u64 source_text_hash,
 			const std::string& entry_point,
@@ -192,6 +195,7 @@ namespace rsx::metal
 			shader_library_metadata& metadata) const;
 		b8 try_find_shader_library_metadata(
 			const char* stage,
+			u32 shader_id,
 			u64 source_hash,
 			u64 source_text_hash,
 			const std::string& entry_point,
@@ -217,6 +221,7 @@ namespace rsx::metal
 		shader_completion_metadata load_shader_completion_metadata(const std::string& path) const;
 		b8 find_shader_completion_metadata(
 			const char* stage,
+			u32 shader_id,
 			u64 source_hash,
 			u64 source_text_hash,
 			const std::string& entry_point,
@@ -230,6 +235,7 @@ namespace rsx::metal
 			shader_completion_metadata& metadata) const;
 		b8 try_find_shader_completion_metadata(
 			const char* stage,
+			u32 shader_id,
 			u64 source_hash,
 			u64 source_text_hash,
 			const std::string& entry_point,
@@ -244,6 +250,7 @@ namespace rsx::metal
 			std::string& error) const;
 		b8 try_load_shader_completion_metadata(
 			const char* stage,
+			u32 shader_id,
 			u64 source_hash,
 			shader_completion_metadata& metadata,
 			std::string& error) const;
@@ -253,9 +260,10 @@ namespace rsx::metal
 			u64 source_hash,
 			const std::string& failure_reason);
 		shader_translation_failure_metadata load_shader_translation_failure_metadata(const std::string& path) const;
-		b8 find_shader_translation_failure_metadata(const char* stage, u64 source_hash, shader_translation_failure_metadata& metadata) const;
+		b8 find_shader_translation_failure_metadata(const char* stage, u32 shader_id, u64 source_hash, shader_translation_failure_metadata& metadata) const;
 		b8 try_find_shader_translation_failure_metadata(
 			const char* stage,
+			u32 shader_id,
 			u64 source_hash,
 			shader_translation_failure_metadata& metadata,
 			std::string& error) const;

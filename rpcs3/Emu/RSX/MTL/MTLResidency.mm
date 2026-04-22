@@ -44,6 +44,21 @@ namespace
 				operation ? operation : "operation");
 		}
 	}
+
+	id<MTLResidencySet> require_residency_set(id<MTLResidencySet> residency_set, const char* operation)
+	{
+		rsx_log.trace("require_residency_set(residency_set=*0x%x, operation=%s)",
+			residency_set,
+			operation ? operation : "<null>");
+
+		if (!residency_set)
+		{
+			fmt::throw_exception("Metal residency %s requires a valid residency set",
+				operation ? operation : "operation");
+		}
+
+		return residency_set;
+	}
 }
 
 namespace rsx::metal
@@ -246,7 +261,8 @@ namespace rsx::metal
 	void* residency_manager::handle() const
 	{
 		rsx_log.trace("rsx::metal::residency_manager::handle()");
-		return (__bridge void*)m_impl->m_residency_set;
+		std::lock_guard lock(m_impl->m_mutex);
+		return (__bridge void*)require_residency_set(m_impl->m_residency_set, "handle query");
 	}
 
 	u64 residency_manager::allocated_size() const
@@ -256,7 +272,7 @@ namespace rsx::metal
 		if (@available(macOS 26.0, *))
 		{
 			std::lock_guard lock(m_impl->m_mutex);
-			return m_impl->m_residency_set.allocatedSize;
+			return require_residency_set(m_impl->m_residency_set, "allocated size query").allocatedSize;
 		}
 
 		fmt::throw_exception("Metal residency allocated size query requires macOS 26.0 or newer");
@@ -269,18 +285,19 @@ namespace rsx::metal
 		if (@available(macOS 26.0, *))
 		{
 			std::lock_guard lock(m_impl->m_mutex);
+			id<MTLResidencySet> residency_set = require_residency_set(m_impl->m_residency_set, "allocation count query");
 			if (m_impl->m_allocations.size() > std::numeric_limits<u32>::max())
 			{
 				fmt::throw_exception("Metal residency allocation count exceeds u32 range");
 			}
 
-			if (m_impl->m_residency_set.allocationCount > std::numeric_limits<u32>::max())
+			if (residency_set.allocationCount > std::numeric_limits<u32>::max())
 			{
 				fmt::throw_exception("Metal residency set allocation count exceeds u32 range");
 			}
 
 			const u32 tracked_allocation_count = static_cast<u32>(m_impl->m_allocations.size());
-			const u32 residency_set_allocation_count = static_cast<u32>(m_impl->m_residency_set.allocationCount);
+			const u32 residency_set_allocation_count = static_cast<u32>(residency_set.allocationCount);
 			if (tracked_allocation_count != residency_set_allocation_count)
 			{
 				rsx_log.warning("Metal residency allocation count mismatch: tracked=%u, residency_set=%u",

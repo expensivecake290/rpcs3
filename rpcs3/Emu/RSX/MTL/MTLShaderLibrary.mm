@@ -48,6 +48,26 @@ namespace
 		counter++;
 	}
 
+	u32 checked_shader_library_count(usz count, const char* count_name)
+	{
+		if (count > std::numeric_limits<u32>::max())
+		{
+			fmt::throw_exception("Metal shader library cache %s count overflow", count_name);
+		}
+
+		return static_cast<u32>(count);
+	}
+
+	u32 checked_shader_library_total(u32 lhs, u32 rhs, const char* count_name)
+	{
+		if (lhs > std::numeric_limits<u32>::max() - rhs)
+		{
+			fmt::throw_exception("Metal shader library cache %s total overflow", count_name);
+		}
+
+		return lhs + rhs;
+	}
+
 	const char* stage_suffix(rsx::metal::shader_stage stage)
 	{
 		switch (stage)
@@ -81,6 +101,7 @@ namespace
 		rsx::metal::shader_source_metadata metadata;
 		return cache.try_find_shader_source_metadata(
 			stage,
+			shader.id,
 			shader.source_hash,
 			source_text_hash,
 			shader.entry_point,
@@ -102,6 +123,7 @@ namespace
 		rsx::metal::shader_completion_metadata metadata;
 		return cache.try_find_shader_completion_metadata(
 			stage,
+			shader.id,
 			shader.source_hash,
 			source_text_hash,
 			shader.entry_point,
@@ -253,10 +275,11 @@ namespace
 
 		if (record.id != shader.id)
 		{
-			rsx_log.warning("Metal shader library record id mismatch for source_hash=0x%llx: cached=%u, requested=%u",
+			error = fmt::format("shader id mismatch for source_hash=0x%llx: cached=%u, requested=%u",
 				record.source_hash,
 				record.id,
 				shader.id);
+			return false;
 		}
 
 		return true;
@@ -520,6 +543,7 @@ namespace rsx::metal
 				std::string metadata_error;
 				if (m_impl->m_cache.try_find_shader_library_metadata(
 						stage,
+						shader.id,
 						shader.source_hash,
 						source_text_hash,
 						shader.entry_point,
@@ -631,6 +655,7 @@ namespace rsx::metal
 			shader_library_metadata metadata;
 			if (!m_impl->m_cache.find_shader_library_metadata(
 				stage,
+				shader.id,
 				shader.source_hash,
 				source_text_hash,
 				shader.entry_point,
@@ -682,9 +707,9 @@ namespace rsx::metal
 			.dynamic_library_failures = m_impl->m_dynamic_library_failures,
 			.serialization_failures = m_impl->m_serialization_failures,
 			.memory_validation_failures = m_impl->m_memory_validation_failures,
-			.retained_libraries = static_cast<u32>(m_impl->m_dynamic_libraries.count),
-			.retained_library_records = static_cast<u32>(m_impl->m_library_records.size()),
-			.disk_loaded_library_count = static_cast<u32>(m_impl->m_disk_loaded_libraries.count),
+			.retained_libraries = checked_shader_library_count(m_impl->m_dynamic_libraries.count, "retained library"),
+			.retained_library_records = checked_shader_library_count(m_impl->m_library_records.size(), "retained library record"),
+			.disk_loaded_library_count = checked_shader_library_count(m_impl->m_disk_loaded_libraries.count, "disk-loaded library"),
 		};
 	}
 
@@ -712,6 +737,21 @@ namespace rsx::metal
 			rsx_log.warning("Metal dynamic shader library cache has more disk-loaded markers than retained libraries: disk_retained=%u, retained=%u",
 				cache_stats.disk_loaded_library_count,
 				cache_stats.retained_libraries);
+		}
+		if (cache_stats.disk_loaded_library_count > cache_stats.loaded_libraries)
+		{
+			rsx_log.warning("Metal dynamic shader library cache has more retained disk-loaded libraries than successful disk loads: disk_retained=%u, loaded=%u",
+				cache_stats.disk_loaded_library_count,
+				cache_stats.loaded_libraries);
+		}
+
+		const u32 retained_source_count = checked_shader_library_total(cache_stats.loaded_libraries, cache_stats.compiled_libraries, "retained source");
+		if (cache_stats.retained_libraries != retained_source_count)
+		{
+			rsx_log.warning("Metal dynamic shader library cache retained count does not match load/compile sources: retained=%u, loaded=%u, compiled=%u",
+				cache_stats.retained_libraries,
+				cache_stats.loaded_libraries,
+				cache_stats.compiled_libraries);
 		}
 		rsx_log.notice("Metal dynamic shader library cache metadata: source_misses=%u, source_invalid=%u, completion_misses=%u, completion_invalid=%u, library_hits=%u, library_misses=%u, library_invalid=%u, disk_load_failures=%u",
 			cache_stats.source_metadata_misses,

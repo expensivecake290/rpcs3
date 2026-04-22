@@ -62,6 +62,6 @@ namespace rsx::metal
 
 	private:
 		struct heap_manager_impl;
-		std::unique_ptr<heap_manager_impl> m_impl;
+		std::shared_ptr<heap_manager_impl> m_impl;
 	};
 }

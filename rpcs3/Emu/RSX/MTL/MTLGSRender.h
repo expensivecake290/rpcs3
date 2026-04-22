@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Emu/RSX/RSXThread.h"
+#include "Emu/RSX/Core/RSXVertexTypes.h"
 
 #include "MTLCommandQueue.h"
 #include "MTLDevice.h"
@@ -8,12 +9,21 @@
 #include "MTLPipelineCache.h"
 #include "MTLPipelineState.h"
 #include "MTLPresentation.h"
+#include "MTLRenderTargetCache.h"
+#include "MTLRenderState.h"
 #include "MTLShaderCache.h"
 #include "MTLShaderCompiler.h"
 #include "MTLShaderLibrary.h"
 #include "MTLShaderRecompiler.h"
 
 #include <memory>
+
+namespace rsx::metal
+{
+	class argument_table_pool;
+	class draw_resource_manager;
+	struct prepared_draw_command;
+}
 
 class MTLGSRender : public rsx::thread
 {
@@ -34,6 +44,11 @@ private:
 
 	void report_backend_state() const;
 	void present_clear_frame();
+	void update_draw_target_state(const rsx::metal::draw_target_binding& binding);
+	rsx::metal::render_pipeline_record get_current_render_pipeline(const rsx::metal::draw_target_binding& binding);
+	rsx::metal::dynamic_render_state_desc get_current_dynamic_render_state(const rsx::metal::draw_render_encoder_scope& draw_encoder);
+	rsx::metal::prepared_draw_command prepare_draw_vertex_inputs(rsx::metal::command_frame& frame, rsx::metal::argument_table& vertex_table, const rsx::metal::shader_interface_layout& layout);
+	rsx::metal::prepared_draw_command preflight_draw_argument_tables(rsx::metal::command_frame& frame, void* render_encoder_handle, const rsx::metal::render_pipeline_record& pipeline);
 
 	std::unique_ptr<rsx::metal::device> m_device;
 	std::unique_ptr<rsx::metal::native_window> m_window;
@@ -45,5 +60,13 @@ private:
 	std::unique_ptr<rsx::metal::shader_recompiler> m_shader_recompiler;
 	std::unique_ptr<rsx::metal::pipeline_cache> m_pipeline_cache;
 	std::unique_ptr<rsx::metal::render_pipeline_cache> m_render_pipeline_cache;
+	std::unique_ptr<rsx::metal::render_target_cache> m_render_target_cache;
+	std::unique_ptr<rsx::metal::render_state_cache> m_render_state_cache;
+	std::unique_ptr<rsx::metal::draw_resource_manager> m_draw_resources;
+	std::unique_ptr<rsx::metal::argument_table_pool> m_vertex_argument_tables;
+	std::unique_ptr<rsx::metal::argument_table_pool> m_fragment_argument_tables;
+	rsx::vertex_input_layout m_vertex_layout;
+	rsx::metal::render_scissor m_draw_scissor;
+	b8 m_draw_scissor_valid = false;
 	u64 m_frame_count = 0;
 };

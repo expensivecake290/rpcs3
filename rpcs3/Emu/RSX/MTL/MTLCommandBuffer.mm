@@ -220,7 +220,7 @@ namespace rsx::metal
 
 	void command_frame::mark_completed(u64 signal_value)
 	{
-		rsx_log.trace("rsx::metal::command_frame::mark_completed(frame_index=%u, signal_value=0x%x)", m_impl->m_frame_index, signal_value);
+		rsx_log.trace("rsx::metal::command_frame::mark_completed(frame_index=%u, signal_value=0x%llx)", m_impl->m_frame_index, signal_value);
 
 		std::vector<std::function<void()>> callbacks;
 
@@ -281,7 +281,7 @@ namespace rsx::metal
 
 		if (!object_handle)
 		{
-			return;
+			fmt::throw_exception("Metal command frame lifetime tracking requires a valid object");
 		}
 
 		std::lock_guard lock(m_impl->m_mutex);
@@ -291,7 +291,7 @@ namespace rsx::metal
 
 	resource_barrier command_frame::track_resource_usage(const resource_usage& usage)
 	{
-		rsx_log.trace("rsx::metal::command_frame::track_resource_usage(frame_index=%u, resource_id=0x%x, stage=%s, access=%s, scope=%s)",
+		rsx_log.trace("rsx::metal::command_frame::track_resource_usage(frame_index=%u, resource_id=0x%llx, stage=%s, access=%s, scope=%s)",
 			m_impl->m_frame_index,
 			usage.resource_id,
 			describe_resource_stage(usage.stage),
@@ -305,7 +305,7 @@ namespace rsx::metal
 
 	void command_frame::track_present_boundary(u64 resource_id)
 	{
-		rsx_log.trace("rsx::metal::command_frame::track_present_boundary(frame_index=%u, resource_id=0x%x)",
+		rsx_log.trace("rsx::metal::command_frame::track_present_boundary(frame_index=%u, resource_id=0x%llx)",
 			m_impl->m_frame_index, resource_id);
 
 		std::lock_guard lock(m_impl->m_mutex);

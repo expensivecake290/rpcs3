@@ -29,6 +29,16 @@ namespace
 		NSString* ns_path = [NSString stringWithUTF8String:path.c_str()];
 		return [NSURL fileURLWithPath:ns_path];
 	}
+
+	void* require_shader_compiler_handle(void* handle, const char* handle_name)
+	{
+		if (!handle)
+		{
+			fmt::throw_exception("Metal shader compiler %s handle is not ready", handle_name);
+		}
+
+		return handle;
+	}
 }
 
 namespace rsx::metal
@@ -48,6 +58,84 @@ namespace rsx::metal
 		b8 m_archive_without_metadata = false;
 		b8 m_archive_load_failed = false;
 	};
+
+	void validate_shader_compiler_state(
+		id<MTL4Compiler> compiler,
+		id<MTL4PipelineDataSetSerializer> pipeline_serializer,
+		MTL4CompilerTaskOptions* task_options,
+		id<MTL4Archive> archive,
+		const std::string& archive_path,
+		const std::string& archive_metadata_error,
+		const std::string& archive_load_error,
+		b8 archive_metadata_found,
+		b8 archive_metadata_invalid,
+		b8 archive_loaded,
+		b8 archive_without_metadata,
+		b8 archive_load_failed)
+	{
+		rsx_log.trace("validate_shader_compiler_state(compiler=*0x%x, serializer=*0x%x, task_options=*0x%x, archive=*0x%x)",
+			compiler,
+			pipeline_serializer,
+			task_options,
+			archive);
+
+		if (!compiler)
+		{
+			fmt::throw_exception("Metal shader compiler state requires a compiler handle");
+		}
+
+		if (!pipeline_serializer)
+		{
+			fmt::throw_exception("Metal shader compiler state requires a pipeline data serializer");
+		}
+
+		if (!task_options)
+		{
+			fmt::throw_exception("Metal shader compiler state requires compiler task options");
+		}
+
+		if (archive_path.empty())
+		{
+			fmt::throw_exception("Metal shader compiler state requires an archive path");
+		}
+
+		if (archive_loaded && (!archive_metadata_found || !archive))
+		{
+			fmt::throw_exception("Metal shader compiler loaded archive state requires validated metadata and an archive handle");
+		}
+
+		if (archive_loaded && (archive_metadata_invalid || archive_load_failed || archive_without_metadata))
+		{
+			fmt::throw_exception("Metal shader compiler archive state is both loaded and invalid or missing metadata");
+		}
+
+		if (archive_metadata_invalid && archive_metadata_error.empty())
+		{
+			fmt::throw_exception("Metal shader compiler archive metadata is invalid without an error");
+		}
+
+		if (archive_load_failed && (!archive_metadata_found || archive_load_error.empty() || archive))
+		{
+			fmt::throw_exception("Metal shader compiler archive load failure state is incomplete");
+		}
+
+		if (archive_without_metadata && (archive_metadata_found || archive_metadata_invalid || archive || archive_loaded))
+		{
+			fmt::throw_exception("Metal shader compiler archive-without-metadata state conflicts with loaded archive state");
+		}
+
+		if (archive)
+		{
+			if (!task_options.lookupArchives || task_options.lookupArchives.count != 1)
+			{
+				fmt::throw_exception("Metal shader compiler lookup archive was not attached to task options");
+			}
+		}
+		else if (task_options.lookupArchives && task_options.lookupArchives.count)
+		{
+			fmt::throw_exception("Metal shader compiler task options reference lookup archives without an archive handle");
+		}
+	}
 
 	shader_compiler::shader_compiler(device& metal_device, const persistent_shader_cache& cache)
 		: m_impl(std::make_unique<shader_compiler_impl>())
@@ -121,6 +209,20 @@ namespace rsx::metal
 			{
 				m_impl->m_task_options.lookupArchives = @[m_impl->m_archive];
 			}
+
+			validate_shader_compiler_state(
+				m_impl->m_compiler,
+				m_impl->m_pipeline_serializer,
+				m_impl->m_task_options,
+				m_impl->m_archive,
+				m_impl->m_archive_path,
+				m_impl->m_archive_metadata_error,
+				m_impl->m_archive_load_error,
+				m_impl->m_archive_metadata_found,
+				m_impl->m_archive_metadata_invalid,
+				m_impl->m_archive_loaded,
+				m_impl->m_archive_without_metadata,
+				m_impl->m_archive_load_failed);
 		}
 		else
 		{
@@ -157,11 +259,48 @@ namespace rsx::metal
 		{
 			rsx_log.warning("Metal 4 lookup archive load error: %s", compiler_stats.archive_load_error);
 		}
+		if (compiler_stats.lookup_archive_configured && !compiler_stats.archive_loaded)
+		{
+			rsx_log.warning("Metal 4 compiler task options have a lookup archive configured without a loaded archive");
+		}
+		if (compiler_stats.archive_loaded && !compiler_stats.archive_metadata_found)
+		{
+			rsx_log.warning("Metal 4 lookup archive is loaded without validated archive metadata");
+		}
+		if (compiler_stats.archive_metadata_invalid && compiler_stats.archive_metadata_error.empty())
+		{
+			rsx_log.warning("Metal 4 lookup archive metadata is invalid without a recorded error");
+		}
+		if (compiler_stats.archive_load_failed && compiler_stats.archive_load_error.empty())
+		{
+			rsx_log.warning("Metal 4 lookup archive load failed without a recorded error");
+		}
+		if (compiler_stats.archive_loaded && compiler_stats.archive_load_failed)
+		{
+			rsx_log.warning("Metal 4 lookup archive is marked both loaded and failed");
+		}
+		if (compiler_stats.archive_without_metadata && compiler_stats.archive_metadata_found)
+		{
+			rsx_log.warning("Metal 4 lookup archive is marked as both metadata-backed and missing metadata");
+		}
 	}
 
 	shader_compiler_stats shader_compiler::stats() const
 	{
 		rsx_log.trace("rsx::metal::shader_compiler::stats()");
+		validate_shader_compiler_state(
+			m_impl->m_compiler,
+			m_impl->m_pipeline_serializer,
+			m_impl->m_task_options,
+			m_impl->m_archive,
+			m_impl->m_archive_path,
+			m_impl->m_archive_metadata_error,
+			m_impl->m_archive_load_error,
+			m_impl->m_archive_metadata_found,
+			m_impl->m_archive_metadata_invalid,
+			m_impl->m_archive_loaded,
+			m_impl->m_archive_without_metadata,
+			m_impl->m_archive_load_failed);
 
 		return
 		{
@@ -183,19 +322,19 @@ namespace rsx::metal
 	void* shader_compiler::compiler_handle() const
 	{
 		rsx_log.trace("rsx::metal::shader_compiler::compiler_handle()");
-		return (__bridge void*)m_impl->m_compiler;
+		return require_shader_compiler_handle((__bridge void*)m_impl->m_compiler, "compiler");
 	}
 
 	void* shader_compiler::pipeline_serializer_handle() const
 	{
 		rsx_log.trace("rsx::metal::shader_compiler::pipeline_serializer_handle()");
-		return (__bridge void*)m_impl->m_pipeline_serializer;
+		return require_shader_compiler_handle((__bridge void*)m_impl->m_pipeline_serializer, "pipeline serializer");
 	}
 
 	void* shader_compiler::task_options_handle() const
 	{
 		rsx_log.trace("rsx::metal::shader_compiler::task_options_handle()");
-		return (__bridge void*)m_impl->m_task_options;
+		return require_shader_compiler_handle((__bridge void*)m_impl->m_task_options, "task options");
 	}
 
 	void* shader_compiler::archive_handle() const

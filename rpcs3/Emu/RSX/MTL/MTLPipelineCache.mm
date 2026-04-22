@@ -30,6 +30,16 @@ namespace
 		NSString* ns_path = [NSString stringWithUTF8String:path.c_str()];
 		return [NSURL fileURLWithPath:ns_path];
 	}
+
+	void increment_pipeline_cache_counter(u32& counter, const char* counter_name)
+	{
+		if (counter == std::numeric_limits<u32>::max())
+		{
+			fmt::throw_exception("Metal pipeline cache %s counter overflow", counter_name);
+		}
+
+		counter++;
+	}
 }
 
 namespace rsx::metal
@@ -73,7 +83,7 @@ namespace rsx::metal
 		if (m_impl->m_cache.try_find_pipeline_archive_metadata(archive_metadata, archive_metadata_error))
 		{
 			m_impl->m_archive_metadata_found = true;
-			m_impl->m_archive_metadata_restore_count++;
+			increment_pipeline_cache_counter(m_impl->m_archive_metadata_restore_count, "archive metadata restore");
 			m_impl->m_archived_pipeline_count = archive_metadata.flushed_pipeline_count;
 			m_impl->m_flushed_pipeline_count = archive_metadata.flushed_pipeline_count;
 			m_impl->m_archive_script_size = archive_metadata.script_size;
@@ -96,7 +106,7 @@ namespace rsx::metal
 		}
 		else
 		{
-			m_impl->m_archive_metadata_miss_count++;
+			increment_pipeline_cache_counter(m_impl->m_archive_metadata_miss_count, "archive metadata miss");
 			rsx_log.notice("Metal pipeline archive metadata was not found; pipeline archive cache will be populated after pipeline compilation");
 		}
 	}
@@ -110,12 +120,7 @@ namespace rsx::metal
 	{
 		rsx_log.trace("rsx::metal::pipeline_cache::record_pipeline_compilation()");
 
-		if (m_impl->m_dirty_pipeline_count == std::numeric_limits<u32>::max())
-		{
-			fmt::throw_exception("Metal pipeline cache dirty pipeline counter overflow");
-		}
-
-		m_impl->m_dirty_pipeline_count++;
+		increment_pipeline_cache_counter(m_impl->m_dirty_pipeline_count, "dirty pipeline");
 	}
 
 	void pipeline_cache::flush()
@@ -124,7 +129,7 @@ namespace rsx::metal
 
 		if (!m_impl->m_dirty_pipeline_count)
 		{
-			m_impl->m_skipped_flush_count++;
+			increment_pipeline_cache_counter(m_impl->m_skipped_flush_count, "skipped flush");
 			rsx_log.trace("Metal pipeline cache flush skipped because no Metal pipeline states were compiled");
 			return;
 		}
@@ -136,7 +141,7 @@ namespace rsx::metal
 
 			if (!serializer)
 			{
-				m_impl->m_serializer_missing_failures++;
+				increment_pipeline_cache_counter(m_impl->m_serializer_missing_failures, "serializer missing failure");
 				fmt::throw_exception("Metal pipeline cache flush requires a pipeline data set serializer");
 			}
 
@@ -145,7 +150,7 @@ namespace rsx::metal
 			if (!pipeline_script)
 			{
 				const std::string error = script_error ? get_ns_string([script_error localizedDescription]) : "unknown error";
-				m_impl->m_script_serialization_failures++;
+				increment_pipeline_cache_counter(m_impl->m_script_serialization_failures, "script serialization failure");
 				fmt::throw_exception("Metal pipeline cache failed to serialize pipeline script: %s", error);
 			}
 
@@ -160,7 +165,7 @@ namespace rsx::metal
 			if (![serializer serializeAsArchiveAndFlushToURL:make_file_url(archive_path) error:&archive_error])
 			{
 				const std::string error = archive_error ? get_ns_string([archive_error localizedDescription]) : "unknown error";
-				m_impl->m_archive_serialization_failures++;
+				increment_pipeline_cache_counter(m_impl->m_archive_serialization_failures, "archive serialization failure");
 				fmt::throw_exception("Metal pipeline cache failed to serialize pipeline archive '%s': %s", archive_path, error);
 			}
 
@@ -196,7 +201,7 @@ namespace rsx::metal
 					expected_flushed_pipeline_count);
 			}
 
-			m_impl->m_flushed_pipeline_count += m_impl->m_dirty_pipeline_count;
+			m_impl->m_flushed_pipeline_count = expected_flushed_pipeline_count;
 			m_impl->m_dirty_pipeline_count = 0;
 			m_impl->m_archived_pipeline_count = archive_metadata.flushed_pipeline_count;
 			m_impl->m_archive_script_size = archive_metadata.script_size;
@@ -206,7 +211,7 @@ namespace rsx::metal
 			m_impl->m_archive_metadata_found = true;
 			m_impl->m_archive_metadata_invalid = false;
 			m_impl->m_archive_metadata_error.clear();
-			m_impl->m_successful_flush_count++;
+			increment_pipeline_cache_counter(m_impl->m_successful_flush_count, "successful flush");
 		}
 		else
 		{
@@ -267,6 +272,40 @@ namespace rsx::metal
 		if (cache_stats.archive_metadata_invalid)
 		{
 			rsx_log.warning("Metal pipeline archive metadata error: %s", cache_stats.archive_metadata_error);
+		}
+		if (cache_stats.archive_metadata_found && cache_stats.archive_metadata_invalid)
+		{
+			rsx_log.warning("Metal pipeline archive metadata is marked both found and invalid");
+		}
+		if (cache_stats.archive_metadata_invalid && cache_stats.archive_metadata_error.empty())
+		{
+			rsx_log.warning("Metal pipeline archive metadata is invalid without a recorded error");
+		}
+		if (cache_stats.archive_metadata_found)
+		{
+			if (cache_stats.archived_pipeline_count != cache_stats.flushed_pipeline_count)
+			{
+				rsx_log.warning("Metal pipeline archive metadata count mismatch: archived=%u, flushed=%u",
+					cache_stats.archived_pipeline_count,
+					cache_stats.flushed_pipeline_count);
+			}
+
+			if (!cache_stats.archived_pipeline_count ||
+				!cache_stats.archive_script_size ||
+				!cache_stats.archive_size ||
+				!cache_stats.archive_script_hash ||
+				!cache_stats.archive_hash)
+			{
+				rsx_log.warning("Metal pipeline archive metadata is found but missing required archive fields");
+			}
+		}
+		else if (cache_stats.archived_pipeline_count ||
+			cache_stats.archive_script_size ||
+			cache_stats.archive_size ||
+			cache_stats.archive_script_hash ||
+			cache_stats.archive_hash)
+		{
+			rsx_log.warning("Metal pipeline archive cache has archive fields without valid metadata");
 		}
 		rsx_log.notice("Metal pipeline cache failures: serializer_missing=%u, script_serialization=%u, archive_serialization=%u",
 			cache_stats.serializer_missing_failures,

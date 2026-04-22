@@ -661,13 +661,16 @@ if(APPLE AND USE_METAL)
             RSX/MTL/MTLCommandBuffer.mm
             RSX/MTL/MTLCommandQueue.mm
             RSX/MTL/MTLDevice.mm
+            RSX/MTL/MTLDrawCommands.mm
             RSX/MTL/MTLHeap.mm
             RSX/MTL/MTLLifetime.mm
             RSX/MTL/MTLNativeWindow.mm
             RSX/MTL/MTLPipelineCache.mm
             RSX/MTL/MTLPipelineState.mm
             RSX/MTL/MTLPresentation.mm
+            RSX/MTL/MTLRenderTargetCache.mm
             RSX/MTL/MTLRenderTargets.mm
+            RSX/MTL/MTLRenderState.mm
             RSX/MTL/MTLResidency.mm
             RSX/MTL/MTLShaderCompiler.mm
             RSX/MTL/MTLShaderLibrary.mm
@@ -680,6 +683,7 @@ if(APPLE AND USE_METAL)
         target_sources(rpcs3_emu PRIVATE
             ${RPCS3_MTL_OBJCXX_SOURCES}
             RSX/MTL/MTLGSRender.cpp
+            RSX/MTL/MTLDrawResources.cpp
             RSX/MTL/MTLMeshPipelinePlan.cpp
             RSX/MTL/MTLMSL.cpp
             RSX/MTL/MTLResourceState.cpp

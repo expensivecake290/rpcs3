@@ -369,7 +369,7 @@ namespace rsx::metal
 	{
 		rsx_log.notice("rsx::metal::device::report_memory_usage()");
 		m_impl->m_heaps->report();
-		rsx_log.notice("Metal residency set usage: allocations=%u, allocated_size=0x%x",
+		rsx_log.notice("Metal residency set usage: allocations=%u, allocated_size=0x%llx",
 			residency_allocation_count(), residency_allocated_size());
 	}
 
@@ -385,7 +385,7 @@ namespace rsx::metal
 		rsx_log.notice("Metal 4 support: %s", m_impl->m_caps.metal4_supported ? "yes" : "no");
 		rsx_log.notice("MetalFX framework availability: %s", m_impl->m_caps.metalfx_available ? "yes" : "no");
 		rsx_log.notice("Residency sets: %s", m_impl->m_caps.residency_sets_supported ? "yes" : "no");
-		rsx_log.notice("Backend residency set: allocations=%u, allocated_size=0x%x",
+		rsx_log.notice("Backend residency set: allocations=%u, allocated_size=0x%llx",
 			residency_allocation_count(), residency_allocated_size());
 		rsx_log.notice("Metal heap sizing: private_buffer_4k_size=0x%llx, private_buffer_alignment=0x%llx, private_texture_64x64_size=0x%llx, private_texture_alignment=0x%llx",
 			m_impl->m_caps.private_buffer_heap_size,

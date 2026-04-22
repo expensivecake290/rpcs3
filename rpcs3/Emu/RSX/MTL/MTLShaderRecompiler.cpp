@@ -271,8 +271,9 @@ namespace
 
 		if (metadata.shader_id != shader.id)
 		{
-			rsx_log.warning("Metal pipeline entry metadata shader id mismatch for stage=%s, source_hash=0x%llx: cached=%u, current=%u",
+			rsx_log.warning("Metal pipeline entry metadata shader id mismatch for stage=%s, source_hash=0x%llx: cached=%u, current=%u; cache entry will be regenerated",
 				stage, shader.source_hash, metadata.shader_id, shader.id);
+			return false;
 		}
 
 		rsx::metal::validate_pipeline_entry_requirement_mask_for_stage(shader.stage, metadata.requirement_mask);
@@ -434,7 +435,7 @@ namespace
 			shader.cache_path);
 
 		rsx::metal::shader_source_metadata metadata;
-		if (!cache.find_shader_source_metadata(stage, shader.source_hash, source_text_hash, shader.entry_point, shader.cache_path, metadata))
+		if (!cache.find_shader_source_metadata(stage, shader.id, shader.source_hash, source_text_hash, shader.entry_point, shader.cache_path, metadata))
 		{
 			fmt::throw_exception("Metal shader source metadata lookup failed after storing stage=%s, source_hash=0x%llx", stage, shader.source_hash);
 		}
@@ -466,6 +467,7 @@ namespace
 		rsx::metal::shader_completion_metadata metadata;
 		if (!cache.find_shader_completion_metadata(
 			stage,
+			shader.id,
 			shader.source_hash,
 			source_text_hash,
 			shader.entry_point,
@@ -505,16 +507,18 @@ namespace
 		rsx::metal::persistent_shader_cache& cache,
 		const char* stage,
 		const char* stage_name,
+		u32 id,
 		u64 source_hash,
 		rsx::metal::shader_translation_failure_metadata& metadata)
 	{
-		rsx_log.trace("load_cached_translation_failure_metadata(stage=%s, stage_name=%s, source_hash=0x%llx)",
+		rsx_log.trace("load_cached_translation_failure_metadata(stage=%s, stage_name=%s, id=%u, source_hash=0x%llx)",
 			stage ? stage : "<null>",
 			stage_name ? stage_name : "<null>",
+			id,
 			source_hash);
 
 		std::string metadata_error;
-		if (!cache.try_find_shader_translation_failure_metadata(stage, source_hash, metadata, metadata_error))
+		if (!cache.try_find_shader_translation_failure_metadata(stage, id, source_hash, metadata, metadata_error))
 		{
 			if (!metadata_error.empty())
 			{
@@ -665,7 +669,7 @@ namespace
 		rsx::metal::shader_completion_metadata metadata;
 		std::string metadata_error;
 		const char* stage_suffix = pipeline_entry_stage_suffix(stage);
-		if (!cache.try_load_shader_completion_metadata(stage_suffix, source_hash, metadata, metadata_error))
+		if (!cache.try_load_shader_completion_metadata(stage_suffix, id, source_hash, metadata, metadata_error))
 		{
 			if (!metadata_error.empty())
 			{
@@ -680,11 +684,12 @@ namespace
 
 		if (metadata.shader_id != id)
 		{
-			rsx_log.warning("Metal %s shader completion metadata shader id mismatch for source_hash=0x%llx: cached=%u, current=%u",
+			rsx_log.warning("Metal %s shader completion metadata shader id mismatch for source_hash=0x%llx: cached=%u, current=%u; cache entry will be regenerated",
 				stage_name ? stage_name : "<null>",
 				source_hash,
 				metadata.shader_id,
 				id);
+			return false;
 		}
 
 		shader = make_completed_shader_from_metadata(stage, stage_name, id, metadata);
@@ -1100,7 +1105,7 @@ namespace rsx::metal
 
 		const u64 hash = static_cast<u64>(program_hash_util::vertex_program_utils::get_vertex_program_ucode_hash(program));
 		shader_translation_failure_metadata failure_metadata;
-		if (load_cached_translation_failure_metadata(m_cache, "vp", "vertex", hash, failure_metadata))
+		if (load_cached_translation_failure_metadata(m_cache, "vp", "vertex", id, hash, failure_metadata))
 		{
 			fail_cached_translation("vertex", id, hash, failure_metadata);
 		}
@@ -1171,7 +1176,7 @@ namespace rsx::metal
 
 		const u64 hash = static_cast<u64>(program_hash_util::fragment_program_utils::get_fragment_program_ucode_hash(program));
 		shader_translation_failure_metadata failure_metadata;
-		if (load_cached_translation_failure_metadata(m_cache, "fp", "fragment", hash, failure_metadata))
+		if (load_cached_translation_failure_metadata(m_cache, "fp", "fragment", id, hash, failure_metadata))
 		{
 			fail_cached_translation("fragment", id, hash, failure_metadata);
 		}

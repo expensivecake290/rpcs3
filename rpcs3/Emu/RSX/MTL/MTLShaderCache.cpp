@@ -25,6 +25,29 @@ namespace
 		counter++;
 	}
 
+	u32 checked_cache_total(u32 lhs, u32 rhs, const char* counter_name)
+	{
+		if (lhs > std::numeric_limits<u32>::max() - rhs)
+		{
+			fmt::throw_exception("Metal shader cache %s total overflow", counter_name);
+		}
+
+		return lhs + rhs;
+	}
+
+	void report_cache_split_mismatch(const char* label, u32 total, u32 available, u32 gated)
+	{
+		const u32 split_total = checked_cache_total(available, gated, label);
+		if (total != split_total)
+		{
+			rsx_log.warning("Metal shader cache %s split mismatch: total=%u, available=%u, gated=%u",
+				label,
+				total,
+				available,
+				gated);
+		}
+	}
+
 	std::string make_manifest_text(std::string_view version)
 	{
 		rsx_log.trace("make_manifest_text(version=%s)", version);
@@ -508,6 +531,7 @@ namespace
 
 	std::string shader_library_metadata_mismatch(
 		const rsx::metal::shader_library_metadata& metadata,
+		u32 shader_id,
 		u64 source_hash,
 		u64 source_text_hash,
 		const std::string& entry_point,
@@ -516,13 +540,21 @@ namespace
 		u32 pipeline_requirement_mask,
 		b8 pipeline_entry_available)
 	{
-		rsx_log.trace("shader_library_metadata_mismatch(source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, library_path=%s, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+		rsx_log.trace("shader_library_metadata_mismatch(shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, library_path=%s, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+			shader_id,
 			source_hash,
 			source_text_hash,
 			entry_point.c_str(),
 			library_path.c_str(),
 			pipeline_requirement_mask,
 			static_cast<u32>(pipeline_entry_available));
+
+		if (metadata.shader_id != shader_id)
+		{
+			return fmt::format("shader id %u does not match requested shader id %u",
+				metadata.shader_id,
+				shader_id);
+		}
 
 		if (metadata.source_hash != source_hash)
 		{
@@ -578,6 +610,7 @@ namespace
 
 	std::string shader_completion_metadata_mismatch(
 		const rsx::metal::shader_completion_metadata& metadata,
+		u32 shader_id,
 		u64 source_hash,
 		u64 source_text_hash,
 		const std::string& entry_point,
@@ -589,12 +622,20 @@ namespace
 		u32 pipeline_requirement_mask,
 		b8 pipeline_entry_available)
 	{
-		rsx_log.trace("shader_completion_metadata_mismatch(source_hash=0x%llx, source_text_hash=0x%llx, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+		rsx_log.trace("shader_completion_metadata_mismatch(shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+			shader_id,
 			source_hash,
 			source_text_hash,
 			pipeline_source_hash,
 			pipeline_requirement_mask,
 			static_cast<u32>(pipeline_entry_available));
+
+		if (metadata.shader_id != shader_id)
+		{
+			return fmt::format("shader id %u does not match requested shader id %u",
+				metadata.shader_id,
+				shader_id);
+		}
 
 		if (metadata.source_hash != source_hash)
 		{
@@ -669,18 +710,112 @@ namespace
 		return {};
 	}
 
+	std::string pipeline_entry_metadata_mismatch(
+		const rsx::metal::pipeline_entry_metadata& metadata,
+		u32 shader_id,
+		u64 source_hash,
+		u64 pipeline_source_hash,
+		const std::string& entry_point,
+		const std::string& source_path,
+		const std::string& entry_error,
+		u32 requirement_mask,
+		b8 entry_available)
+	{
+		rsx_log.trace("pipeline_entry_metadata_mismatch(shader_id=%u, source_hash=0x%llx, pipeline_source_hash=0x%llx, requirement_mask=0x%x, entry_available=%u)",
+			shader_id,
+			source_hash,
+			pipeline_source_hash,
+			requirement_mask,
+			static_cast<u32>(entry_available));
+
+		if (metadata.shader_id != shader_id)
+		{
+			return fmt::format("shader id %u does not match requested shader id %u",
+				metadata.shader_id,
+				shader_id);
+		}
+
+		if (metadata.source_hash != source_hash)
+		{
+			return fmt::format("source hash 0x%llx does not match requested source hash 0x%llx",
+				metadata.source_hash,
+				source_hash);
+		}
+
+		if (metadata.pipeline_source_hash != pipeline_source_hash)
+		{
+			return fmt::format("pipeline source hash 0x%llx does not match requested pipeline source hash 0x%llx",
+				metadata.pipeline_source_hash,
+				pipeline_source_hash);
+		}
+
+		if (metadata.entry_point != entry_point)
+		{
+			return fmt::format("entry point '%s' does not match requested entry point '%s'",
+				metadata.entry_point,
+				entry_point);
+		}
+
+		if (metadata.source_path != source_path)
+		{
+			return fmt::format("source path '%s' does not match requested source path '%s'",
+				metadata.source_path,
+				source_path);
+		}
+
+		if (metadata.entry_error != entry_error)
+		{
+			return fmt::format("entry error '%s' does not match requested error '%s'",
+				metadata.entry_error,
+				entry_error);
+		}
+
+		if (metadata.requirement_mask != requirement_mask)
+		{
+			return fmt::format("requirement mask 0x%x does not match requested mask 0x%x",
+				metadata.requirement_mask,
+				requirement_mask);
+		}
+
+		const std::string expected_requirement_description = rsx::metal::describe_pipeline_entry_requirements(requirement_mask);
+		if (metadata.requirement_description != expected_requirement_description)
+		{
+			return fmt::format("requirement description '%s' does not match expected description '%s'",
+				metadata.requirement_description,
+				expected_requirement_description);
+		}
+
+		if (metadata.entry_available != entry_available)
+		{
+			return fmt::format("entry availability %u does not match requested availability %u",
+				static_cast<u32>(metadata.entry_available),
+				static_cast<u32>(entry_available));
+		}
+
+		return {};
+	}
+
 	std::string shader_source_metadata_mismatch(
 		const rsx::metal::shader_source_metadata& metadata,
+		u32 shader_id,
 		u64 source_hash,
 		u64 source_text_hash,
 		const std::string& entry_point,
 		const std::string& source_path)
 	{
-		rsx_log.trace("shader_source_metadata_mismatch(source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, source_path=%s)",
+		rsx_log.trace("shader_source_metadata_mismatch(shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, source_path=%s)",
+			shader_id,
 			source_hash,
 			source_text_hash,
 			entry_point.c_str(),
 			source_path.c_str());
+
+		if (metadata.shader_id != shader_id)
+		{
+			return fmt::format("shader id %u does not match requested shader id %u",
+				metadata.shader_id,
+				shader_id);
+		}
 
 		if (metadata.source_hash != source_hash)
 		{
@@ -1544,6 +1679,22 @@ namespace rsx::metal
 		rsx_log.notice("Metal pipeline state cache: pipelines=%u, mesh=%u",
 			m_stats.pipeline_state_entries,
 			m_stats.mesh_pipeline_state_entries);
+
+		report_cache_split_mismatch("completion metadata", m_stats.completion_entries, m_stats.completion_available_entries, m_stats.completion_gated_entries);
+		report_cache_split_mismatch("pipeline entry metadata", m_stats.pipeline_entries, m_stats.pipeline_entry_available_entries, m_stats.pipeline_entry_gated_entries);
+		report_cache_split_mismatch("shader library metadata", m_stats.library_entries, m_stats.library_available_entries, m_stats.library_gated_entries);
+		if (m_stats.mesh_pipeline_entry_entries > m_stats.pipeline_entries)
+		{
+			rsx_log.warning("Metal shader cache mesh pipeline entry count exceeds total pipeline entries: mesh=%u, total=%u",
+				m_stats.mesh_pipeline_entry_entries,
+				m_stats.pipeline_entries);
+		}
+		if (m_stats.mesh_pipeline_state_entries > m_stats.pipeline_state_entries)
+		{
+			rsx_log.warning("Metal shader cache mesh pipeline state count exceeds total pipeline states: mesh=%u, total=%u",
+				m_stats.mesh_pipeline_state_entries,
+				m_stats.pipeline_state_entries);
+		}
 	}
 
 	void persistent_shader_cache::store_shader_source_metadata(
@@ -1614,7 +1765,7 @@ namespace rsx::metal
 		}
 
 		shader_source_metadata loaded_metadata;
-		if (!find_shader_source_metadata(stage, source_hash, source_text_hash, entry_point, source_path, loaded_metadata))
+		if (!find_shader_source_metadata(stage, shader_id, source_hash, source_text_hash, entry_point, source_path, loaded_metadata))
 		{
 			fmt::throw_exception("Metal shader source metadata lookup failed after writing '%s'", path);
 		}
@@ -1697,14 +1848,15 @@ namespace rsx::metal
 
 	b8 persistent_shader_cache::find_shader_source_metadata(
 		const char* stage,
+		u32 shader_id,
 		u64 source_hash,
 		u64 source_text_hash,
 		const std::string& entry_point,
 		const std::string& source_path,
 		shader_source_metadata& metadata) const
 	{
-		rsx_log.trace("rsx::metal::persistent_shader_cache::find_shader_source_metadata(stage=%s, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, source_path=%s)",
-			stage ? stage : "<null>", source_hash, source_text_hash, entry_point.c_str(), source_path.c_str());
+		rsx_log.trace("rsx::metal::persistent_shader_cache::find_shader_source_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, source_path=%s)",
+			stage ? stage : "<null>", shader_id, source_hash, source_text_hash, entry_point.c_str(), source_path.c_str());
 
 		const std::string path = shader_source_metadata_path(stage, source_hash);
 		if (!fs::is_file(path))
@@ -1721,6 +1873,7 @@ namespace rsx::metal
 
 		if (const std::string mismatch = shader_source_metadata_mismatch(
 			loaded_metadata,
+			shader_id,
 			source_hash,
 			source_text_hash,
 			entry_point,
@@ -1737,6 +1890,7 @@ namespace rsx::metal
 
 	b8 persistent_shader_cache::try_find_shader_source_metadata(
 		const char* stage,
+		u32 shader_id,
 		u64 source_hash,
 		u64 source_text_hash,
 		const std::string& entry_point,
@@ -1744,8 +1898,9 @@ namespace rsx::metal
 		shader_source_metadata& metadata,
 		std::string& error) const
 	{
-		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_shader_source_metadata(stage=%s, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, source_path=%s)",
+		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_shader_source_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, source_path=%s)",
 			stage ? stage : "<null>",
+			shader_id,
 			source_hash,
 			source_text_hash,
 			entry_point.c_str(),
@@ -1774,6 +1929,7 @@ namespace rsx::metal
 
 		if (const std::string mismatch = shader_source_metadata_mismatch(
 			loaded_metadata,
+			shader_id,
 			source_hash,
 			source_text_hash,
 			entry_point,
@@ -1875,6 +2031,21 @@ namespace rsx::metal
 		if (!find_pipeline_entry_metadata(stage, source_hash, loaded_metadata))
 		{
 			fmt::throw_exception("Metal pipeline entry metadata write could not be found after writing '%s'", path);
+		}
+
+		if (const std::string mismatch = pipeline_entry_metadata_mismatch(
+			loaded_metadata,
+			shader_id,
+			source_hash,
+			pipeline_source_hash,
+			entry_point,
+			source_path,
+			entry_error,
+			requirement_mask,
+			entry_available);
+			!mismatch.empty())
+		{
+			fmt::throw_exception("Metal pipeline entry metadata changed after writing '%s': %s", path, mismatch);
 		}
 
 		refresh_stats();
@@ -2166,6 +2337,7 @@ namespace rsx::metal
 		shader_library_metadata loaded_metadata;
 		if (!find_shader_library_metadata(
 			stage,
+			shader_id,
 			source_hash,
 			source_text_hash,
 			entry_point,
@@ -2301,6 +2473,7 @@ namespace rsx::metal
 
 	b8 persistent_shader_cache::find_shader_library_metadata(
 		const char* stage,
+		u32 shader_id,
 		u64 source_hash,
 		u64 source_text_hash,
 		const std::string& entry_point,
@@ -2310,8 +2483,9 @@ namespace rsx::metal
 		b8 pipeline_entry_available,
 		shader_library_metadata& metadata) const
 	{
-		rsx_log.trace("rsx::metal::persistent_shader_cache::find_shader_library_metadata(stage=%s, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, library_path=%s, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+		rsx_log.trace("rsx::metal::persistent_shader_cache::find_shader_library_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, library_path=%s, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
 			stage ? stage : "<null>",
+			shader_id,
 			source_hash,
 			source_text_hash,
 			entry_point.c_str(),
@@ -2334,6 +2508,7 @@ namespace rsx::metal
 
 		if (const std::string mismatch = shader_library_metadata_mismatch(
 			loaded_metadata,
+			shader_id,
 			source_hash,
 			source_text_hash,
 			entry_point,
@@ -2353,6 +2528,7 @@ namespace rsx::metal
 
 	b8 persistent_shader_cache::try_find_shader_library_metadata(
 		const char* stage,
+		u32 shader_id,
 		u64 source_hash,
 		u64 source_text_hash,
 		const std::string& entry_point,
@@ -2363,8 +2539,9 @@ namespace rsx::metal
 		shader_library_metadata& metadata,
 		std::string& error) const
 	{
-		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_shader_library_metadata(stage=%s, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, library_path=%s, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_shader_library_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, entry_point=%s, library_path=%s, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
 			stage ? stage : "<null>",
+			shader_id,
 			source_hash,
 			source_text_hash,
 			entry_point.c_str(),
@@ -2395,6 +2572,7 @@ namespace rsx::metal
 
 		if (const std::string mismatch = shader_library_metadata_mismatch(
 			loaded_metadata,
+			shader_id,
 			source_hash,
 			source_text_hash,
 			entry_point,
@@ -2534,6 +2712,7 @@ namespace rsx::metal
 		shader_completion_metadata loaded_metadata;
 		if (!find_shader_completion_metadata(
 			stage,
+			shader_id,
 			source_hash,
 			source_text_hash,
 			entry_point,
@@ -2669,6 +2848,7 @@ namespace rsx::metal
 
 	b8 persistent_shader_cache::find_shader_completion_metadata(
 		const char* stage,
+		u32 shader_id,
 		u64 source_hash,
 		u64 source_text_hash,
 		const std::string& entry_point,
@@ -2681,8 +2861,9 @@ namespace rsx::metal
 		b8 pipeline_entry_available,
 		shader_completion_metadata& metadata) const
 	{
-		rsx_log.trace("rsx::metal::persistent_shader_cache::find_shader_completion_metadata(stage=%s, source_hash=0x%llx, source_text_hash=0x%llx, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+		rsx_log.trace("rsx::metal::persistent_shader_cache::find_shader_completion_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
 			stage ? stage : "<null>",
+			shader_id,
 			source_hash,
 			source_text_hash,
 			pipeline_source_hash,
@@ -2704,6 +2885,7 @@ namespace rsx::metal
 
 		if (const std::string mismatch = shader_completion_metadata_mismatch(
 			loaded_metadata,
+			shader_id,
 			source_hash,
 			source_text_hash,
 			entry_point,
@@ -2726,6 +2908,7 @@ namespace rsx::metal
 
 	b8 persistent_shader_cache::try_find_shader_completion_metadata(
 		const char* stage,
+		u32 shader_id,
 		u64 source_hash,
 		u64 source_text_hash,
 		const std::string& entry_point,
@@ -2739,8 +2922,9 @@ namespace rsx::metal
 		shader_completion_metadata& metadata,
 		std::string& error) const
 	{
-		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_shader_completion_metadata(stage=%s, source_hash=0x%llx, source_text_hash=0x%llx, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_shader_completion_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
 			stage ? stage : "<null>",
+			shader_id,
 			source_hash,
 			source_text_hash,
 			pipeline_source_hash,
@@ -2770,6 +2954,7 @@ namespace rsx::metal
 
 		if (const std::string mismatch = shader_completion_metadata_mismatch(
 			loaded_metadata,
+			shader_id,
 			source_hash,
 			source_text_hash,
 			entry_point,
@@ -2792,12 +2977,14 @@ namespace rsx::metal
 
 	b8 persistent_shader_cache::try_load_shader_completion_metadata(
 		const char* stage,
+		u32 shader_id,
 		u64 source_hash,
 		shader_completion_metadata& metadata,
 		std::string& error) const
 	{
-		rsx_log.trace("rsx::metal::persistent_shader_cache::try_load_shader_completion_metadata(stage=%s, source_hash=0x%llx)",
+		rsx_log.trace("rsx::metal::persistent_shader_cache::try_load_shader_completion_metadata(stage=%s, shader_id=%u, source_hash=0x%llx)",
 			stage ? stage : "<null>",
+			shader_id,
 			source_hash);
 
 		error.clear();
@@ -2826,6 +3013,14 @@ namespace rsx::metal
 			error = fmt::format("metadata source hash 0x%llx does not match requested source hash 0x%llx",
 				loaded_metadata.source_hash,
 				source_hash);
+			return false;
+		}
+
+		if (loaded_metadata.shader_id != shader_id)
+		{
+			error = fmt::format("metadata shader id %u does not match requested shader id %u",
+				loaded_metadata.shader_id,
+				shader_id);
 			return false;
 		}
 
@@ -2880,15 +3075,18 @@ namespace rsx::metal
 		}
 
 		shader_translation_failure_metadata loaded_metadata;
-		if (!find_shader_translation_failure_metadata(stage, source_hash, loaded_metadata))
+		if (!find_shader_translation_failure_metadata(stage, shader_id, source_hash, loaded_metadata))
 		{
 			fmt::throw_exception("Metal shader translation failure metadata lookup failed after writing '%s'", path);
 		}
 
-		if (loaded_metadata.failure_reason != recorded_failure_reason)
+		if (loaded_metadata.shader_id != shader_id ||
+			loaded_metadata.failure_reason != recorded_failure_reason)
 		{
-			fmt::throw_exception("Metal shader translation failure metadata '%s' has reason '%s' but expected '%s'",
+			fmt::throw_exception("Metal shader translation failure metadata '%s' changed after writing: shader_id=%u expected=%u, reason='%s' expected='%s'",
 				path,
+				loaded_metadata.shader_id,
+				shader_id,
 				loaded_metadata.failure_reason,
 				recorded_failure_reason);
 		}
@@ -2960,11 +3158,12 @@ namespace rsx::metal
 
 	b8 persistent_shader_cache::find_shader_translation_failure_metadata(
 		const char* stage,
+		u32 shader_id,
 		u64 source_hash,
 		shader_translation_failure_metadata& metadata) const
 	{
-		rsx_log.trace("rsx::metal::persistent_shader_cache::find_shader_translation_failure_metadata(stage=%s, source_hash=0x%llx)",
-			stage ? stage : "<null>", source_hash);
+		rsx_log.trace("rsx::metal::persistent_shader_cache::find_shader_translation_failure_metadata(stage=%s, shader_id=%u, source_hash=0x%llx)",
+			stage ? stage : "<null>", shader_id, source_hash);
 
 		const std::string path = shader_translation_failure_metadata_path(stage, source_hash);
 		if (!fs::is_file(path))
@@ -2985,18 +3184,25 @@ namespace rsx::metal
 				path, loaded_metadata.source_hash, source_hash);
 		}
 
+		if (loaded_metadata.shader_id != shader_id)
+		{
+			fmt::throw_exception("Metal shader translation failure metadata '%s' has shader id %u but lookup requested %u",
+				path, loaded_metadata.shader_id, shader_id);
+		}
+
 		metadata = std::move(loaded_metadata);
 		return true;
 	}
 
 	b8 persistent_shader_cache::try_find_shader_translation_failure_metadata(
 		const char* stage,
+		u32 shader_id,
 		u64 source_hash,
 		shader_translation_failure_metadata& metadata,
 		std::string& error) const
 	{
-		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_shader_translation_failure_metadata(stage=%s, source_hash=0x%llx)",
-			stage ? stage : "<null>", source_hash);
+		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_shader_translation_failure_metadata(stage=%s, shader_id=%u, source_hash=0x%llx)",
+			stage ? stage : "<null>", shader_id, source_hash);
 
 		error.clear();
 
@@ -3024,6 +3230,14 @@ namespace rsx::metal
 			error = fmt::format("metadata source hash 0x%llx does not match requested source hash 0x%llx",
 				loaded_metadata.source_hash,
 				source_hash);
+			return false;
+		}
+
+		if (loaded_metadata.shader_id != shader_id)
+		{
+			error = fmt::format("metadata shader id %u does not match requested shader id %u",
+				loaded_metadata.shader_id,
+				shader_id);
 			return false;
 		}
 
@@ -3113,6 +3327,22 @@ namespace rsx::metal
 		if (!find_pipeline_archive_metadata(loaded_metadata))
 		{
 			fmt::throw_exception("Metal pipeline archive metadata lookup failed after writing '%s'", path);
+		}
+
+		if (loaded_metadata.flushed_pipeline_count != flushed_pipeline_count)
+		{
+			fmt::throw_exception("Metal pipeline archive metadata has flushed pipeline count %u after writing '%s' but expected %u",
+				loaded_metadata.flushed_pipeline_count,
+				path,
+				flushed_pipeline_count);
+		}
+
+		if (loaded_metadata.script_size != script_size ||
+			loaded_metadata.archive_size != archive_size ||
+			loaded_metadata.script_hash != script_hash ||
+			loaded_metadata.archive_hash != archive_hash)
+		{
+			fmt::throw_exception("Metal pipeline archive metadata changed after writing '%s'", path);
 		}
 
 		refresh_stats();
@@ -3346,6 +3576,20 @@ namespace rsx::metal
 		if (!find_pipeline_state_metadata(pipeline_type, pipeline_hash, loaded_metadata))
 		{
 			fmt::throw_exception("Metal pipeline state metadata lookup failed after writing '%s'", path);
+		}
+
+		if (loaded_metadata.vertex_source_hash != vertex_source_hash ||
+			loaded_metadata.fragment_source_hash != fragment_source_hash ||
+			loaded_metadata.object_source_hash != object_source_hash ||
+			loaded_metadata.mesh_source_hash != mesh_source_hash ||
+			loaded_metadata.linked_library_hash != linked_library_hash ||
+			loaded_metadata.linked_library_count != linked_library_count ||
+			loaded_metadata.shader_dependency_count != shader_dependency_count ||
+			loaded_metadata.color_pixel_format != color_pixel_format ||
+			loaded_metadata.raster_sample_count != raster_sample_count ||
+			loaded_metadata.rasterization_enabled != rasterization_enabled)
+		{
+			fmt::throw_exception("Metal pipeline state metadata changed after writing '%s'", path);
 		}
 
 		refresh_stats();

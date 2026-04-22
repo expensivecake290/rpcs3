@@ -242,7 +242,7 @@ namespace rsx::metal
 
 	resource_barrier resource_state_tracker::record_usage(const resource_usage& usage)
 	{
-		rsx_log.trace("rsx::metal::resource_state_tracker::record_usage(frame_index=%u, resource_id=0x%x, stage=%s, access=%s, scope=%s)",
+		rsx_log.trace("rsx::metal::resource_state_tracker::record_usage(frame_index=%u, resource_id=0x%llx, stage=%s, access=%s, scope=%s)",
 			m_impl->m_frame_index,
 			usage.resource_id,
 			describe_resource_stage(usage.stage),
@@ -281,7 +281,7 @@ namespace rsx::metal
 
 		if (found->second.m_stage == resource_stage::present)
 		{
-			fmt::throw_exception("Metal resource_id=0x%x was reused after a present boundary in the same frame", usage.resource_id);
+			fmt::throw_exception("Metal resource_id=0x%llx was reused after a present boundary in the same frame", usage.resource_id);
 		}
 
 		resource_barrier barrier
@@ -324,7 +324,7 @@ namespace rsx::metal
 				increment_counter(m_impl->m_cross_stage_barrier_count, "cross-stage barrier");
 			}
 
-			rsx_log.trace("Metal resource barrier required for resource_id=0x%x after=%s/%s before=%s/%s scope=%s",
+			rsx_log.trace("Metal resource barrier required for resource_id=0x%llx after=%s/%s before=%s/%s scope=%s",
 				barrier.resource_id,
 				describe_resource_stage(barrier.after_stage),
 				describe_resource_access(barrier.after_access),
@@ -338,7 +338,7 @@ namespace rsx::metal
 
 	void resource_state_tracker::record_present_boundary(u64 resource_id)
 	{
-		rsx_log.trace("rsx::metal::resource_state_tracker::record_present_boundary(frame_index=%u, resource_id=0x%x)",
+		rsx_log.trace("rsx::metal::resource_state_tracker::record_present_boundary(frame_index=%u, resource_id=0x%llx)",
 			m_impl->m_frame_index,
 			resource_id);
 
@@ -350,25 +350,25 @@ namespace rsx::metal
 		const auto found = m_impl->m_resources.find(resource_id);
 		if (found == m_impl->m_resources.end())
 		{
-			fmt::throw_exception("Metal present boundary for resource_id=0x%x was recorded before render target usage", resource_id);
+			fmt::throw_exception("Metal present boundary for resource_id=0x%llx was recorded before render target usage", resource_id);
 		}
 
 		if (found->second.m_stage == resource_stage::present)
 		{
-			rsx_log.trace("Metal present boundary for resource_id=0x%x was already recorded", resource_id);
+			rsx_log.trace("Metal present boundary for resource_id=0x%llx was already recorded", resource_id);
 			return;
 		}
 
 		if (found->second.m_access != resource_access::write)
 		{
-			fmt::throw_exception("Metal present boundary for resource_id=0x%x follows %s/%s usage instead of a GPU write",
+			fmt::throw_exception("Metal present boundary for resource_id=0x%llx follows %s/%s usage instead of a GPU write",
 				resource_id,
 				describe_resource_stage(found->second.m_stage),
 				describe_resource_access(found->second.m_access));
 		}
 
 		increment_counter(m_impl->m_present_boundary_count, "present boundary");
-		rsx_log.trace("Metal present boundary tracked for resource_id=0x%x after=%s/%s before=present/read",
+		rsx_log.trace("Metal present boundary tracked for resource_id=0x%llx after=%s/%s before=present/read",
 			resource_id,
 			describe_resource_stage(found->second.m_stage),
 			describe_resource_access(found->second.m_access));

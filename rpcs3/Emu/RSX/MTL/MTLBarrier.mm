@@ -44,7 +44,7 @@ namespace rsx::metal
 
 	void encode_consumer_barrier(void* encoder_handle, const resource_barrier& barrier)
 	{
-		rsx_log.trace("rsx::metal::encode_consumer_barrier(encoder_handle=*0x%x, resource_id=0x%x, required=%d, after=%s/%s, before=%s/%s, scope=%s)",
+		rsx_log.trace("rsx::metal::encode_consumer_barrier(encoder_handle=*0x%x, resource_id=0x%llx, required=%d, after=%s/%s, before=%s/%s, scope=%s)",
 			encoder_handle,
 			barrier.resource_id,
 			barrier.required,
@@ -66,7 +66,7 @@ namespace rsx::metal
 
 		if (barrier.scope == resource_barrier_scope::none)
 		{
-			fmt::throw_exception("Metal required resource barrier for resource_id=0x%x has no visibility scope", barrier.resource_id);
+			fmt::throw_exception("Metal required resource barrier for resource_id=0x%llx has no visibility scope", barrier.resource_id);
 		}
 
 		if (!encoder_handle)

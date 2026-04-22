@@ -3,6 +3,7 @@
 #include "MTLShaderInterface.h"
 #include "MTLShaderLibrary.h"
 
+#include "Emu/RSX/gcm_enums.h"
 #include "util/types.hpp"
 
 #include <memory>
@@ -30,6 +31,7 @@ namespace rsx::metal
 
 	render_pipeline_shader make_render_pipeline_shader(const translated_shader& shader);
 	render_pipeline_shader make_render_pipeline_shader(const pipeline_entry_metadata& metadata);
+	u32 get_render_pipeline_topology_class(rsx::primitive_type primitive);
 
 	struct render_pipeline_desc
 	{
@@ -45,6 +47,14 @@ namespace rsx::metal
 		u32 input_primitive_topology = 0;
 		b8 alpha_to_coverage = false;
 		b8 alpha_to_one = false;
+		u32 color_write_mask = 0xf;
+		b8 blend_enabled = false;
+		rsx::blend_factor source_rgb_blend_factor = rsx::blend_factor::one;
+		rsx::blend_factor source_alpha_blend_factor = rsx::blend_factor::one;
+		rsx::blend_factor destination_rgb_blend_factor = rsx::blend_factor::zero;
+		rsx::blend_factor destination_alpha_blend_factor = rsx::blend_factor::zero;
+		rsx::blend_equation rgb_blend_operation = rsx::blend_equation::add;
+		rsx::blend_equation alpha_blend_operation = rsx::blend_equation::add;
 		b8 rasterization_enabled = true;
 		b8 support_indirect_command_buffers = false;
 	};
@@ -61,6 +71,7 @@ namespace rsx::metal
 	};
 
 	void validate_pipeline_binding_record(const render_pipeline_record& record);
+	void bind_render_pipeline_state(command_frame& frame, void* render_encoder_handle, const render_pipeline_record& record);
 	void bind_pipeline_arguments(
 		command_frame& frame,
 		void* render_encoder_handle,

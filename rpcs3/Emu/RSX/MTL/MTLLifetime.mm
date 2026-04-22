@@ -34,7 +34,7 @@ namespace rsx::metal
 
 		if (!object_handle)
 		{
-			return;
+			fmt::throw_exception("Metal lifetime tracker requires a valid object for frame %u", m_impl->m_frame_index);
 		}
 
 		if ([m_impl->m_objects count] >= static_cast<NSUInteger>(std::numeric_limits<u32>::max()))

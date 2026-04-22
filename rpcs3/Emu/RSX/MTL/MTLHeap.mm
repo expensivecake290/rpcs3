@@ -159,7 +159,7 @@ namespace rsx::metal
 	}
 
 	heap_manager::heap_manager(void* device_handle)
-		: m_impl(std::make_unique<heap_manager_impl>())
+		: m_impl(std::make_shared<heap_manager_impl>())
 	{
 		rsx_log.notice("rsx::metal::heap_manager::heap_manager(device_handle=*0x%x)", device_handle);
 
@@ -423,16 +423,17 @@ namespace rsx::metal
 		}
 
 		frame.track_object(resource_handle);
-		frame.on_completed([this, resource_handle]()
+		std::shared_ptr<heap_manager_impl> impl = m_impl;
+		frame.on_completed([impl, resource_handle]()
 		{
 			rsx_log.trace("rsx::metal::heap_manager::track_resource_use completion(resource_handle=*0x%x)", resource_handle);
 
 			void* retained_resource_handle = nullptr;
 
 			{
-				std::lock_guard lock(m_impl->m_mutex);
-				auto found = find_resource(m_impl->m_resources, resource_handle);
-				if (found == m_impl->m_resources.end())
+				std::lock_guard lock(impl->m_mutex);
+				auto found = find_resource(impl->m_resources, resource_handle);
+				if (found == impl->m_resources.end())
 				{
 					return;
 				}
@@ -446,8 +447,8 @@ namespace rsx::metal
 				}
 
 				retained_resource_handle = found->m_retained_resource_handle;
-				m_impl->m_resources.erase(found);
-				increment_counter(m_impl->m_aliasable_resources, "aliasable resource");
+				impl->m_resources.erase(found);
+				increment_counter(impl->m_aliasable_resources, "aliasable resource");
 			}
 
 			if (retained_resource_handle)

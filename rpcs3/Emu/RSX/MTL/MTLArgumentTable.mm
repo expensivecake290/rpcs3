@@ -13,6 +13,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <algorithm>
 #include <limits>
 #include <mutex>
 #include <vector>
@@ -57,6 +58,22 @@ namespace
 		MTLResourceID resource_id{};
 		resource_id._impl = value;
 		return resource_id;
+	}
+
+	template <typename T>
+	u32 checked_binding_count(const std::vector<T>& resources, const char* resource_kind)
+	{
+		rsx_log.trace("checked_binding_count(resource_kind=%s, count=0x%llx)",
+			resource_kind ? resource_kind : "<null>",
+			static_cast<u64>(resources.size()));
+
+		if (resources.size() > std::numeric_limits<u32>::max())
+		{
+			fmt::throw_exception("Metal argument table %s binding count exceeds u32 range",
+				resource_kind ? resource_kind : "resource");
+		}
+
+		return static_cast<u32>(resources.size());
 	}
 
 	MTLRenderStages make_render_stages(u32 stages)
@@ -133,9 +150,14 @@ namespace
 		rsx_log.trace("track_heap_resource_use(frame_index=%u, resource_handle=*0x%x)",
 			frame.frame_index(), usage.resource_handle);
 
-		if (!usage.metal_device || !usage.resource_handle)
+		if (!usage.metal_device && !usage.resource_handle)
 		{
 			return;
+		}
+
+		if (!usage.metal_device || !usage.resource_handle)
+		{
+			fmt::throw_exception("Metal argument table heap resource tracking received incomplete heap usage state");
 		}
 
 		for (void* tracked_heap_resource : tracked_heap_resources)
@@ -388,6 +410,25 @@ namespace rsx::metal
 		return m_impl->m_desc.support_attribute_strides;
 	}
 
+	b8 argument_table::is_in_flight() const
+	{
+		rsx_log.trace("rsx::metal::argument_table::is_in_flight(table=*0x%x)", handle());
+
+		std::lock_guard lock(m_impl->m_use_state->m_mutex);
+		return !!m_impl->m_use_state->m_in_flight_use_count;
+	}
+
+	void argument_table::begin_update()
+	{
+		rsx_log.trace("rsx::metal::argument_table::begin_update(table=*0x%x)", handle());
+
+		std::lock_guard lock(m_impl->m_use_state->m_mutex);
+		validate_table_mutable(*m_impl->m_use_state, "begin a binding update");
+		std::fill(m_impl->m_bound_buffers.begin(), m_impl->m_bound_buffers.end(), argument_table_bound_resource{});
+		std::fill(m_impl->m_bound_textures.begin(), m_impl->m_bound_textures.end(), argument_table_bound_resource{});
+		std::fill(m_impl->m_bound_samplers.begin(), m_impl->m_bound_samplers.end(), nullptr);
+	}
+
 	void argument_table::bind_buffer_address(u32 index, const buffer& buf, u64 offset, resource_access access)
 	{
 		rsx_log.trace("rsx::metal::argument_table::bind_buffer_address(index=%u, buffer=*0x%x, offset=0x%llx, access=%s)",
@@ -570,6 +611,15 @@ namespace rsx::metal
 		}
 	}
 
+	void argument_table::validate_shader_layout(const shader_interface_layout& layout) const
+	{
+		rsx_log.trace("rsx::metal::argument_table::validate_shader_layout(table=*0x%x, layout_stage=%u)",
+			handle(), static_cast<u32>(layout.stage));
+
+		std::lock_guard lock(m_impl->m_use_state->m_mutex);
+		validate_shader_layout_locked(layout);
+	}
+
 	void argument_table::validate_shader_bindings(const shader_interface_layout& layout) const
 	{
 		rsx_log.trace("rsx::metal::argument_table::validate_shader_bindings(table=*0x%x, layout_stage=%u)",
@@ -656,9 +706,9 @@ namespace rsx::metal
 		}
 	}
 
-	void argument_table::validate_shader_bindings_locked(const shader_interface_layout& layout) const
+	void argument_table::validate_shader_layout_locked(const shader_interface_layout& layout) const
 	{
-		rsx_log.trace("rsx::metal::argument_table::validate_shader_bindings_locked(table=*0x%x, layout_stage=%u, stages=0x%x)",
+		rsx_log.trace("rsx::metal::argument_table::validate_shader_layout_locked(table=*0x%x, layout_stage=%u, stages=0x%x)",
 			handle(), static_cast<u32>(layout.stage), layout.render_stage_mask);
 
 		validate_shader_interface_layout(layout);
@@ -682,6 +732,14 @@ namespace rsx::metal
 		{
 			fmt::throw_exception("Metal argument table attribute-stride support mismatch for shader stage %u", static_cast<u32>(layout.stage));
 		}
+	}
+
+	void argument_table::validate_shader_bindings_locked(const shader_interface_layout& layout) const
+	{
+		rsx_log.trace("rsx::metal::argument_table::validate_shader_bindings_locked(table=*0x%x, layout_stage=%u, stages=0x%x)",
+			handle(), static_cast<u32>(layout.stage), layout.render_stage_mask);
+
+		validate_shader_layout_locked(layout);
 
 		const auto validate_buffer_slot = [this, &layout](u32 index, const char* role)
 		{
@@ -770,7 +828,7 @@ namespace rsx::metal
 
 		const auto validate_resources = [stage](const std::vector<argument_table_bound_resource>& resources, const char* resource_kind)
 		{
-			const u32 resource_count = static_cast<u32>(resources.size());
+			const u32 resource_count = checked_binding_count(resources, resource_kind);
 			for (u32 lhs_index = 0; lhs_index < resource_count; lhs_index++)
 			{
 				const argument_table_bound_resource& lhs = resources[lhs_index];
@@ -821,6 +879,28 @@ namespace rsx::metal
 		tracked_objects.reserve(1 + m_impl->m_bound_buffers.size() + m_impl->m_bound_textures.size() + m_impl->m_bound_samplers.size());
 		tracked_heap_resources.reserve(m_impl->m_bound_buffers.size() + m_impl->m_bound_textures.size());
 
+		const auto track_bound_resource = [&frame, encoder_handle, stage, &tracked_objects, &tracked_heap_resources](
+			const argument_table_bound_resource& resource,
+			const char* resource_kind,
+			resource_barrier_scope scope)
+		{
+			if (!resource.m_resource_id)
+			{
+				return;
+			}
+
+			if (!resource.m_object_handle)
+			{
+				fmt::throw_exception("Metal argument table %s slot %u has a resource ID without a lifetime-tracked object",
+					resource_kind,
+					resource.m_slot);
+			}
+
+			track_object_once(frame, tracked_objects, resource.m_object_handle);
+			track_heap_resource_use(frame, tracked_heap_resources, resource.m_heap_usage);
+			track_bound_resource_usage(frame, encoder_handle, resource.m_resource_id, stage, resource.m_access, scope);
+		};
+
 		track_object_once(frame, tracked_objects, handle());
 
 		if (m_impl->m_texture_views)
@@ -830,16 +910,12 @@ namespace rsx::metal
 
 		for (const argument_table_bound_resource& buffer : m_impl->m_bound_buffers)
 		{
-			track_object_once(frame, tracked_objects, buffer.m_object_handle);
-			track_heap_resource_use(frame, tracked_heap_resources, buffer.m_heap_usage);
-			track_bound_resource_usage(frame, encoder_handle, buffer.m_resource_id, stage, buffer.m_access, resource_barrier_scope::buffers);
+			track_bound_resource(buffer, "buffer", resource_barrier_scope::buffers);
 		}
 
 		for (const argument_table_bound_resource& texture : m_impl->m_bound_textures)
 		{
-			track_object_once(frame, tracked_objects, texture.m_object_handle);
-			track_heap_resource_use(frame, tracked_heap_resources, texture.m_heap_usage);
-			track_bound_resource_usage(frame, encoder_handle, texture.m_resource_id, stage, texture.m_access, resource_barrier_scope::textures);
+			track_bound_resource(texture, "texture", resource_barrier_scope::textures);
 		}
 
 		for (void* sampler_handle : m_impl->m_bound_samplers)
@@ -867,5 +943,70 @@ namespace rsx::metal
 		}
 
 		use_state->m_in_flight_use_count++;
+	}
+
+	struct argument_table_pool::argument_table_pool_impl
+	{
+		device& m_device;
+		argument_table_desc m_desc{};
+		std::vector<std::unique_ptr<argument_table>> m_tables;
+		mutable std::mutex m_mutex;
+
+		argument_table_pool_impl(device& dev, argument_table_desc desc)
+			: m_device(dev)
+			, m_desc(std::move(desc))
+		{
+		}
+	};
+
+	argument_table_pool::argument_table_pool(device& dev, argument_table_desc desc)
+		: m_impl(std::make_unique<argument_table_pool_impl>(dev, std::move(desc)))
+	{
+		rsx_log.notice("rsx::metal::argument_table_pool::argument_table_pool(device=*0x%x, buffers=%u, textures=%u, samplers=%u)",
+			dev.handle(),
+			m_impl->m_desc.max_buffers,
+			m_impl->m_desc.max_textures,
+			m_impl->m_desc.max_samplers);
+	}
+
+	argument_table_pool::~argument_table_pool()
+	{
+		rsx_log.notice("rsx::metal::argument_table_pool::~argument_table_pool(retained=%u)", retained_table_count());
+	}
+
+	argument_table& argument_table_pool::acquire()
+	{
+		rsx_log.trace("rsx::metal::argument_table_pool::acquire(retained=%u)", retained_table_count());
+
+		std::lock_guard lock(m_impl->m_mutex);
+		for (std::unique_ptr<argument_table>& table : m_impl->m_tables)
+		{
+			if (table->is_in_flight())
+			{
+				continue;
+			}
+
+			table->begin_update();
+			return *table;
+		}
+
+		auto table = std::make_unique<argument_table>(m_impl->m_device, m_impl->m_desc);
+		argument_table& result = *table;
+		result.begin_update();
+		m_impl->m_tables.emplace_back(std::move(table));
+		return result;
+	}
+
+	u32 argument_table_pool::retained_table_count() const
+	{
+		rsx_log.trace("rsx::metal::argument_table_pool::retained_table_count()");
+
+		std::lock_guard lock(m_impl->m_mutex);
+		if (m_impl->m_tables.size() > std::numeric_limits<u32>::max())
+		{
+			fmt::throw_exception("Metal argument table pool retained table count overflow");
+		}
+
+		return static_cast<u32>(m_impl->m_tables.size());
 	}
 }

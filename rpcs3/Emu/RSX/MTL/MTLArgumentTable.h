@@ -48,18 +48,22 @@ namespace rsx::metal
 		u32 max_textures() const;
 		u32 max_samplers() const;
 		b8 supports_attribute_strides() const;
+		b8 is_in_flight() const;
 
+		void begin_update();
 		void bind_buffer_address(u32 index, const buffer& buf, u64 offset = 0, resource_access access = resource_access::read);
 		void bind_vertex_buffer_address(u32 index, const buffer& buf, u64 offset, u32 stride);
 		void bind_texture(u32 index, const texture& tex, resource_access access = resource_access::read);
 		void bind_sampler(u32 index, const sampler& sampler_state);
 
+		void validate_shader_layout(const shader_interface_layout& layout) const;
 		void validate_shader_bindings(const shader_interface_layout& layout) const;
 		void bind_to_render_encoder(command_frame& frame, void* render_encoder_handle, const shader_interface_layout& layout) const;
 		void bind_to_render_encoder(command_frame& frame, void* render_encoder_handle, u32 stages) const;
 		void bind_to_compute_encoder(command_frame& frame, void* compute_encoder_handle) const;
 
 	private:
+		void validate_shader_layout_locked(const shader_interface_layout& layout) const;
 		void validate_shader_bindings_locked(const shader_interface_layout& layout) const;
 		void validate_bound_resource_conflicts(resource_stage stage) const;
 		void track_bound_resources(command_frame& frame, void* encoder_handle, resource_stage stage) const;
@@ -67,5 +71,22 @@ namespace rsx::metal
 
 		struct argument_table_impl;
 		std::unique_ptr<argument_table_impl> m_impl;
+	};
+
+	class argument_table_pool
+	{
+	public:
+		argument_table_pool(device& dev, argument_table_desc desc);
+		~argument_table_pool();
+
+		argument_table_pool(const argument_table_pool&) = delete;
+		argument_table_pool& operator=(const argument_table_pool&) = delete;
+
+		argument_table& acquire();
+		u32 retained_table_count() const;
+
+	private:
+		struct argument_table_pool_impl;
+		std::unique_ptr<argument_table_pool_impl> m_impl;
 	};
 }
