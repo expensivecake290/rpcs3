@@ -128,6 +128,7 @@ namespace
 			source_text_hash,
 			shader.entry_point,
 			shader.cache_path,
+			shader.fragment_constant_offsets,
 			shader.pipeline_source_hash,
 			shader.pipeline_entry_point,
 			shader.pipeline_cache_path,

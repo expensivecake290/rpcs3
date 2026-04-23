@@ -3,6 +3,7 @@
 #include "util/types.hpp"
 
 #include <string>
+#include <vector>
 
 struct RSXFragmentProgram;
 struct RSXVertexProgram;
@@ -38,6 +39,7 @@ namespace rsx::metal
 		std::string entry_point;
 		std::string source;
 		std::string cache_path;
+		std::vector<u32> fragment_constant_offsets;
 		u64 pipeline_source_hash = 0;
 		std::string pipeline_entry_point;
 		std::string pipeline_source;

@@ -799,6 +799,11 @@ namespace rsx::metal
 			}
 		};
 
+		if (layout.context_buffer_index != shader_binding_none)
+		{
+			validate_buffer_slot(layout.context_buffer_index, "context");
+		}
+
 		if (layout.constants_buffer_index != shader_binding_none)
 		{
 			validate_buffer_slot(layout.constants_buffer_index, "constants");

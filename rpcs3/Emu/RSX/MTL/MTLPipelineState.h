@@ -39,6 +39,7 @@ namespace rsx::metal
 		std::string label;
 		render_pipeline_shader vertex;
 		render_pipeline_shader fragment;
+		std::vector<u32> fragment_constant_offsets;
 		shader_interface_layout vertex_layout = make_vertex_shader_interface_layout();
 		shader_interface_layout fragment_layout = make_fragment_shader_interface_layout(0, 0);
 		std::vector<shader_library_record> linked_libraries;
@@ -65,6 +66,7 @@ namespace rsx::metal
 		void* pipeline_handle = nullptr;
 		shader_interface_layout primary_layout = make_vertex_shader_interface_layout();
 		shader_interface_layout fragment_layout = make_fragment_shader_interface_layout(0, 0);
+		std::vector<u32> fragment_constant_offsets;
 		b8 cached = false;
 		b8 mesh_pipeline = false;
 		b8 has_fragment_layout = false;

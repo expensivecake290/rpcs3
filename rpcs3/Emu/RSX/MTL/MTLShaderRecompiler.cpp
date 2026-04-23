@@ -151,6 +151,20 @@ namespace
 		{
 			require_helper_source_text(stage, source, fmt::format("float4 input[{}];", rsx::metal::shader_fragment_input_count), "fragment input array");
 			require_helper_source_text(stage, source, fmt::format("float4 output[{}];", rsx::metal::shader_fragment_color_output_count), "fragment output array");
+			require_helper_source_text(stage, source, "float fog_param0;", "fragment fog parameter");
+			require_helper_source_text(stage, source, "float fog_param1;", "fragment fog parameter");
+			require_helper_source_text(stage, source, "uint rop_control;", "fragment ROP control");
+			require_helper_source_text(stage, source, "float alpha_ref;", "fragment alpha reference");
+			require_helper_source_text(stage, source, "uint fog_mode;", "fragment fog mode");
+			require_helper_source_text(stage, source, "float wpos_scale;", "fragment wpos scale");
+			require_helper_source_text(stage, source, "float2 wpos_bias;", "fragment wpos bias");
+			require_helper_source_text(stage, source, "#define fog_param0 ctx.fog_param0", "fragment fog binding");
+			require_helper_source_text(stage, source, "#define fog_param1 ctx.fog_param1", "fragment fog binding");
+			require_helper_source_text(stage, source, "#define rop_control ctx.rop_control", "fragment ROP binding");
+			require_helper_source_text(stage, source, "#define alpha_ref ctx.alpha_ref", "fragment alpha binding");
+			require_helper_source_text(stage, source, "#define fog_mode ctx.fog_mode", "fragment fog binding");
+			require_helper_source_text(stage, source, "#define wpos_scale ctx.wpos_scale", "fragment wpos binding");
+			require_helper_source_text(stage, source, "#define wpos_bias ctx.wpos_bias", "fragment wpos binding");
 			require_helper_source_text(stage, source, "float depth;", "fragment depth export member");
 			require_helper_source_text(stage, source, "bool discarded;", "fragment discard state member");
 			require_helper_source_text(stage, source, "#define _kill() do { ctx.discarded = true; return; } while (false)", "fragment discard binding");
@@ -457,6 +471,7 @@ namespace
 			source_text_hash,
 			shader.entry_point,
 			shader.cache_path,
+			shader.fragment_constant_offsets,
 			shader.pipeline_source_hash,
 			shader.pipeline_entry_point,
 			shader.pipeline_cache_path,
@@ -472,6 +487,7 @@ namespace
 			source_text_hash,
 			shader.entry_point,
 			shader.cache_path,
+			shader.fragment_constant_offsets,
 			shader.pipeline_source_hash,
 			shader.pipeline_entry_point,
 			shader.pipeline_cache_path,
@@ -622,6 +638,7 @@ namespace
 			.entry_point = metadata.entry_point,
 			.source = load_cached_text_file(metadata.source_path, "helper MSL"),
 			.cache_path = metadata.source_path,
+			.fragment_constant_offsets = metadata.fragment_constant_offsets,
 			.pipeline_source_hash = metadata.pipeline_source_hash,
 			.pipeline_entry_point = metadata.pipeline_entry_point,
 			.pipeline_cache_path = metadata.pipeline_source_path,
@@ -719,6 +736,9 @@ namespace
 		{
 			rsx_log.trace("metal_vertex_decompiler::translate()");
 
+			// Keep Metal transform constants unrelocated so the pipeline wrapper can bind the
+			// complete RSX constant file without shader-specific relocation metadata.
+			properties.has_indexed_constants = true;
 			std::string source = Decompile();
 
 			if (properties.has_lit_op)
@@ -924,6 +944,12 @@ namespace
 			return m_entry_point;
 		}
 
+		const std::vector<u32>& constant_offsets() const
+		{
+			rsx_log.trace("metal_fragment_decompiler::constant_offsets(count=%u)", static_cast<u32>(properties.constant_offsets.size()));
+			return properties.constant_offsets;
+		}
+
 	private:
 		std::string getFloatTypeName(usz element_count) override
 		{
@@ -965,6 +991,13 @@ namespace
 				"{\n"
 				"	float4 input[" << rsx::metal::shader_fragment_input_count << "];\n"
 				"	float4 output[" << rsx::metal::shader_fragment_color_output_count << "];\n"
+				"	float fog_param0;\n"
+				"	float fog_param1;\n"
+				"	uint rop_control;\n"
+				"	float alpha_ref;\n"
+				"	uint fog_mode;\n"
+				"	float wpos_scale;\n"
+				"	float2 wpos_bias;\n"
 				"	float depth;\n"
 				"	constant float4* constants;\n"
 				"	bool discarded;\n"
@@ -999,6 +1032,13 @@ namespace
 			stream << "{\n";
 			stream << "#define _fetch_constant(index) ctx.constants[index]\n";
 			stream << "#define _kill() do { ctx.discarded = true; return; } while (false)\n";
+			stream << "#define fog_param0 ctx.fog_param0\n";
+			stream << "#define fog_param1 ctx.fog_param1\n";
+			stream << "#define rop_control ctx.rop_control\n";
+			stream << "#define alpha_ref ctx.alpha_ref\n";
+			stream << "#define fog_mode ctx.fog_mode\n";
+			stream << "#define wpos_scale ctx.wpos_scale\n";
+			stream << "#define wpos_bias ctx.wpos_bias\n";
 			stream << "\tfloat4 gl_FragCoord = ctx.input[0];\n";
 
 			for (const ParamType& param_type : m_parr.params[PF_PARAM_NONE])
@@ -1069,6 +1109,13 @@ namespace
 				stream << "\tctx.depth = r1.z;\n";
 			}
 
+			stream << "#undef wpos_bias\n";
+			stream << "#undef wpos_scale\n";
+			stream << "#undef fog_mode\n";
+			stream << "#undef alpha_ref\n";
+			stream << "#undef rop_control\n";
+			stream << "#undef fog_param1\n";
+			stream << "#undef fog_param0\n";
 			stream << "#undef _kill\n";
 			stream << "#undef _fetch_constant\n";
 			stream << "}\n";
@@ -1212,6 +1259,7 @@ namespace rsx::metal
 			.entry_point = decompiler.entry_point(),
 			.source = source,
 			.cache_path = path,
+			.fragment_constant_offsets = decompiler.constant_offsets(),
 		};
 
 		store_shader_source_metadata(m_cache, shader, source_text_hash);
@@ -1247,7 +1295,7 @@ namespace rsx::metal
 		const std::string mesh_plan_description = describe_mesh_pipeline_plan(mesh_plan);
 		rsx_log.notice("Metal shader recompiler mesh pipeline plan: %s", mesh_plan_description.c_str());
 
-		rsx_log.warning("Metal shader recompiler: pipeline entry points are gated until argument-table shader binding, vertex input fetch, and transform constants are implemented");
-		rsx_log.warning("Metal shader recompiler: texture sampling, discard, advanced fragment control flow, and mesh wrappers are gated until MSL/resource bindings are implemented");
+		rsx_log.warning("Metal shader recompiler: pipeline entry points are gated until verified MSL argument-table shader binding syntax, GPU vertex fetch wrapper source, fragment stage I/O wrappers, and viewport/depth output mapping are implemented");
+		rsx_log.warning("Metal shader recompiler: texture sampling, discard, advanced fragment control flow, and mesh wrappers are gated until Metal resource bindings and wrapper generation are implemented");
 	}
 }

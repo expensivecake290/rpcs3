@@ -62,6 +62,97 @@ namespace
 		}
 	}
 
+	void validate_vertex_pipeline_entry_layout(const rsx::metal::shader_interface_layout& layout)
+	{
+		rsx_log.trace("validate_vertex_pipeline_entry_layout(stage=%u, buffers=%u, context=%u, constants=%u, vertex_layout=%u, persistent=%u, volatile=%u, vertex_count=%u)",
+			static_cast<u32>(layout.stage),
+			layout.argument_table.max_buffers,
+			layout.context_buffer_index,
+			layout.constants_buffer_index,
+			layout.vertex_layout_buffer_index,
+			layout.persistent_vertex_buffer_index,
+			layout.volatile_vertex_buffer_index,
+			layout.vertex_buffer_count);
+
+		if (layout.stage != rsx::metal::shader_stage::vertex)
+		{
+			fmt::throw_exception("Metal vertex pipeline entry layout requires a vertex-stage interface");
+		}
+
+		if (layout.context_buffer_index == rsx::metal::shader_binding_none ||
+			layout.constants_buffer_index == rsx::metal::shader_binding_none)
+		{
+			fmt::throw_exception("Metal vertex pipeline entry layout requires context and constants buffer bindings");
+		}
+
+		if (layout.vertex_buffer_count)
+		{
+			fmt::throw_exception("Metal vertex pipeline entry layout requires packed vertex fetch bindings");
+		}
+	}
+
+	void validate_fragment_pipeline_entry_layout(const rsx::metal::shader_interface_layout& layout)
+	{
+		rsx_log.trace("validate_fragment_pipeline_entry_layout(stage=%u, buffers=%u, context=%u, constants=%u, uses_stage_inputs=%u)",
+			static_cast<u32>(layout.stage),
+			layout.argument_table.max_buffers,
+			layout.context_buffer_index,
+			layout.constants_buffer_index,
+			static_cast<u32>(layout.uses_stage_inputs));
+
+		if (layout.stage != rsx::metal::shader_stage::fragment)
+		{
+			fmt::throw_exception("Metal fragment pipeline entry layout requires a fragment-stage interface");
+		}
+
+		if (layout.context_buffer_index == rsx::metal::shader_binding_none)
+		{
+			fmt::throw_exception("Metal fragment pipeline entry layout requires a context buffer binding");
+		}
+
+		if (layout.constants_buffer_index == rsx::metal::shader_binding_none)
+		{
+			fmt::throw_exception("Metal fragment pipeline entry layout requires a constants buffer binding");
+		}
+
+		if (!layout.uses_stage_inputs)
+		{
+			fmt::throw_exception("Metal fragment pipeline entry layout requires fragment stage input tracking");
+		}
+	}
+
+	void validate_mesh_pipeline_entry_layout(const rsx::metal::shader_interface_layout& layout)
+	{
+		rsx_log.trace("validate_mesh_pipeline_entry_layout(stage=%u, buffers=%u, context=%u, constants=%u, mesh_grid=%u, vertex_count=%u)",
+			static_cast<u32>(layout.stage),
+			layout.argument_table.max_buffers,
+			layout.context_buffer_index,
+			layout.constants_buffer_index,
+			static_cast<u32>(layout.uses_mesh_grid),
+			layout.vertex_buffer_count);
+
+		if (layout.stage != rsx::metal::shader_stage::mesh)
+		{
+			fmt::throw_exception("Metal mesh pipeline entry layout requires a mesh-stage interface");
+		}
+
+		if (layout.context_buffer_index == rsx::metal::shader_binding_none ||
+			layout.constants_buffer_index == rsx::metal::shader_binding_none)
+		{
+			fmt::throw_exception("Metal mesh pipeline entry layout requires context and constants buffer bindings");
+		}
+
+		if (!layout.uses_mesh_grid)
+		{
+			fmt::throw_exception("Metal mesh pipeline entry layout requires mesh grid tracking");
+		}
+
+		if (layout.vertex_buffer_count)
+		{
+			fmt::throw_exception("Metal mesh pipeline entry layout requires packed vertex fetch bindings");
+		}
+	}
+
 	const char* shader_stage_name(rsx::metal::shader_stage stage)
 	{
 		rsx_log.trace("shader_stage_name(stage=%u)", static_cast<u32>(stage));
@@ -94,6 +185,7 @@ namespace rsx::metal
 			pipeline_requirement(pipeline_entry_requirement::viewport_depth_transform);
 
 		const shader_interface_layout layout = make_vertex_shader_interface_layout();
+		validate_vertex_pipeline_entry_layout(layout);
 		rsx_log.notice("Metal vertex shader interface: %s", describe_shader_interface_layout(layout));
 		rsx_log.notice("Metal vertex shader stage I/O: %s", describe_shader_stage_io_layout(layout));
 
@@ -101,7 +193,7 @@ namespace rsx::metal
 			shader,
 			layout,
 			requirement_mask,
-			"Metal vertex pipeline entry generation is gated until argument-table shader binding, vertex input fetch, and viewport/depth transform state are implemented"));
+			"Metal vertex pipeline entry generation is gated until verified MSL argument-table shader binding syntax, GPU vertex fetch wrapper source, and viewport/depth output mapping are implemented"));
 	}
 
 	void mark_fragment_pipeline_entry_status(translated_shader& shader, const RSXFragmentProgram& program)
@@ -111,12 +203,13 @@ namespace rsx::metal
 
 		validate_helper_shader(shader, shader_stage::fragment);
 
-		std::string reason = "Metal fragment pipeline entry generation is gated until argument-table shader binding and stage input layout are implemented";
+		std::string reason = "Metal fragment pipeline entry generation is gated until verified MSL argument-table shader binding syntax and fragment stage input/output wrapper generation are implemented";
 		u32 requirement_mask =
 			pipeline_requirement(pipeline_entry_requirement::argument_table_shader_binding) |
 			pipeline_requirement(pipeline_entry_requirement::stage_input_layout);
 
 		const shader_interface_layout layout = make_fragment_shader_interface_layout(0, 0);
+		validate_fragment_pipeline_entry_layout(layout);
 		rsx_log.notice("Metal fragment shader interface: %s", describe_shader_interface_layout(layout));
 		rsx_log.notice("Metal fragment shader stage I/O: %s", describe_shader_stage_io_layout(layout));
 
@@ -146,6 +239,7 @@ namespace rsx::metal
 		validate_helper_shader(shader, shader_stage::mesh);
 
 		const mesh_pipeline_plan plan = make_mesh_pipeline_plan();
+		validate_mesh_pipeline_entry_layout(plan.interface_layout);
 		rsx_log.notice("Metal mesh pipeline plan: %s", describe_mesh_pipeline_plan(plan));
 
 		apply_pipeline_entry_build_result(shader, build_pipeline_entry_source(

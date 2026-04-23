@@ -328,7 +328,7 @@ namespace rsx::metal
 
 		if (!requirement_mask)
 		{
-			fmt::throw_exception("Metal pipeline entry source generation requires verified MSL argument-table shader binding syntax");
+			fmt::throw_exception("Metal pipeline entry source generation requires a verified executable MSL wrapper implementation");
 		}
 
 		if (reason.empty())

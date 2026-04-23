@@ -209,6 +209,61 @@ namespace
 		fmt::throw_exception("Metal pipeline entry metadata field '%s' must be 0 or 1", field);
 	}
 
+	std::string serialize_metadata_u32_list(const std::vector<u32>& values)
+	{
+		rsx_log.trace("serialize_metadata_u32_list(count=%u)", static_cast<u32>(values.size()));
+
+		if (values.empty())
+		{
+			return {};
+		}
+
+		std::string result;
+		for (usz index = 0; index < values.size(); index++)
+		{
+			if (index)
+			{
+				result += ",";
+			}
+
+			result += fmt::format("0x%x", values[index]);
+		}
+
+		return result;
+	}
+
+	std::vector<u32> parse_metadata_u32_list(const std::string& value, const char* field)
+	{
+		rsx_log.trace("parse_metadata_u32_list(field=%s, value=%s)", field, value);
+
+		std::vector<u32> result;
+		if (value.empty())
+		{
+			return result;
+		}
+
+		usz begin = 0;
+		while (begin <= value.size())
+		{
+			const usz end = value.find(',', begin);
+			const std::string token = value.substr(begin, end == umax ? std::string::npos : end - begin);
+			if (token.empty())
+			{
+				fmt::throw_exception("Invalid Metal pipeline entry metadata list '%s=%s'", field, value);
+			}
+
+			result.push_back(parse_metadata_u32(token, field));
+			if (end == umax)
+			{
+				break;
+			}
+
+			begin = end + 1;
+		}
+
+		return result;
+	}
+
 	b8 try_get_metadata_field(std::string_view text, std::string_view key, std::string& result)
 	{
 		rsx_log.trace("try_get_metadata_field(key=%s)", key);
@@ -292,6 +347,40 @@ namespace
 		}
 
 		return false;
+	}
+
+	b8 try_parse_metadata_u32_list(const std::string& value, std::vector<u32>& result)
+	{
+		rsx_log.trace("try_parse_metadata_u32_list(value=%s)", value);
+
+		result.clear();
+		if (value.empty())
+		{
+			return true;
+		}
+
+		usz begin = 0;
+		while (begin <= value.size())
+		{
+			const usz end = value.find(',', begin);
+			const std::string token = value.substr(begin, end == umax ? std::string::npos : end - begin);
+			u32 parsed_value = 0;
+			if (token.empty() || !try_parse_metadata_u32(token, parsed_value))
+			{
+				result.clear();
+				return false;
+			}
+
+			result.push_back(parsed_value);
+			if (end == umax)
+			{
+				break;
+			}
+
+			begin = end + 1;
+		}
+
+		return true;
 	}
 
 	b8 is_pipeline_entry_stage(std::string_view stage)
@@ -615,6 +704,7 @@ namespace
 		u64 source_text_hash,
 		const std::string& entry_point,
 		const std::string& source_path,
+		const std::vector<u32>& fragment_constant_offsets,
 		u64 pipeline_source_hash,
 		const std::string& pipeline_entry_point,
 		const std::string& pipeline_source_path,
@@ -622,10 +712,11 @@ namespace
 		u32 pipeline_requirement_mask,
 		b8 pipeline_entry_available)
 	{
-		rsx_log.trace("shader_completion_metadata_mismatch(shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+		rsx_log.trace("shader_completion_metadata_mismatch(shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, fragment_constant_count=%u, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
 			shader_id,
 			source_hash,
 			source_text_hash,
+			static_cast<u32>(fragment_constant_offsets.size()),
 			pipeline_source_hash,
 			pipeline_requirement_mask,
 			static_cast<u32>(pipeline_entry_available));
@@ -663,6 +754,11 @@ namespace
 			return fmt::format("helper source path '%s' does not match requested helper source path '%s'",
 				metadata.source_path,
 				source_path);
+		}
+
+		if (metadata.fragment_constant_offsets != fragment_constant_offsets)
+		{
+			return "fragment constant offsets do not match requested shader metadata";
 		}
 
 		if (metadata.pipeline_source_hash != pipeline_source_hash)
@@ -1196,7 +1292,7 @@ namespace
 		}
 
 		u32 metadata_u32 = 0;
-		if (!try_get_metadata_field(view, "record_version", field) || !try_parse_metadata_u32(field, metadata_u32) || metadata_u32 != 1)
+		if (!try_get_metadata_field(view, "record_version", field) || !try_parse_metadata_u32(field, metadata_u32) || metadata_u32 != 2)
 		{
 			return false;
 		}
@@ -1236,6 +1332,12 @@ namespace
 			return false;
 		}
 
+		std::vector<u32> fragment_constant_offsets;
+		if (!try_get_metadata_field(view, "fragment_constant_offsets", field) || !try_parse_metadata_u32_list(field, fragment_constant_offsets))
+		{
+			return false;
+		}
+
 		u64 actual_source_text_hash = 0;
 		if (!get_file_text_hash(source_path, actual_source_text_hash) || actual_source_text_hash != source_text_hash)
 		{
@@ -1261,6 +1363,11 @@ namespace
 		}
 
 		if (!is_pipeline_entry_requirement_mask_for_stage(stage, pipeline_requirement_mask))
+		{
+			return false;
+		}
+
+		if (stage != "fragment" && !fragment_constant_offsets.empty())
 		{
 			return false;
 		}
@@ -2597,6 +2704,7 @@ namespace rsx::metal
 		u64 source_text_hash,
 		const std::string& entry_point,
 		const std::string& source_path,
+		const std::vector<u32>& fragment_constant_offsets,
 		u64 pipeline_source_hash,
 		const std::string& pipeline_entry_point,
 		const std::string& pipeline_source_path,
@@ -2604,11 +2712,12 @@ namespace rsx::metal
 		u32 pipeline_requirement_mask,
 		b8 pipeline_entry_available)
 	{
-		rsx_log.trace("rsx::metal::persistent_shader_cache::store_shader_completion_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+		rsx_log.trace("rsx::metal::persistent_shader_cache::store_shader_completion_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, fragment_constant_count=%u, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
 			stage ? stage : "<null>",
 			shader_id,
 			source_hash,
 			source_text_hash,
+			static_cast<u32>(fragment_constant_offsets.size()),
 			pipeline_source_hash,
 			pipeline_requirement_mask,
 			static_cast<u32>(pipeline_entry_available));
@@ -2638,6 +2747,11 @@ namespace rsx::metal
 		if (source_path.empty())
 		{
 			fmt::throw_exception("Metal shader completion metadata requires a helper source path");
+		}
+
+		if ((std::strcmp(stage ? stage : "", "fragment") != 0) && !fragment_constant_offsets.empty())
+		{
+			fmt::throw_exception("Metal non-fragment shader completion metadata cannot retain fragment constant offsets");
 		}
 
 		u64 actual_source_text_hash = 0;
@@ -2671,17 +2785,19 @@ namespace rsx::metal
 
 		const std::string path = shader_completion_metadata_path(stage, source_hash);
 		const std::string pipeline_requirement_description = describe_pipeline_entry_requirements(pipeline_requirement_mask);
+		const std::string fragment_constant_offset_text = serialize_metadata_u32_list(fragment_constant_offsets);
 		const std::string metadata = fmt::format(
 			"RPCS3 Metal shader completion\n"
 			"backend=metal\n"
 			"cache_version=%s\n"
-			"record_version=1\n"
+			"record_version=2\n"
 			"stage=%s\n"
 			"shader_id=%u\n"
 			"source_hash=0x%llx\n"
 			"source_text_hash=0x%llx\n"
 			"entry_point=%s\n"
 			"source_path=%s\n"
+			"fragment_constant_offsets=%s\n"
 			"pipeline_source_hash=0x%llx\n"
 			"pipeline_entry_available=%u\n"
 			"pipeline_requirement_mask=0x%x\n"
@@ -2696,6 +2812,7 @@ namespace rsx::metal
 			source_text_hash,
 			metadata_value(entry_point),
 			metadata_value(source_path),
+			metadata_value(fragment_constant_offset_text),
 			pipeline_source_hash,
 			static_cast<u32>(pipeline_entry_available),
 			pipeline_requirement_mask,
@@ -2717,6 +2834,7 @@ namespace rsx::metal
 			source_text_hash,
 			entry_point,
 			source_path,
+			fragment_constant_offsets,
 			pipeline_source_hash,
 			pipeline_entry_point,
 			pipeline_source_path,
@@ -2762,7 +2880,7 @@ namespace rsx::metal
 		}
 
 		const u32 record_version = parse_metadata_u32(get_metadata_field(view, "record_version"), "record_version");
-		if (record_version != 1)
+		if (record_version != 2)
 		{
 			fmt::throw_exception("Metal shader completion metadata '%s' has unsupported record version %u", path, record_version);
 		}
@@ -2775,6 +2893,7 @@ namespace rsx::metal
 			.source_text_hash = parse_metadata_u64(get_metadata_field(view, "source_text_hash"), "source_text_hash"),
 			.entry_point = get_metadata_field(view, "entry_point"),
 			.source_path = get_metadata_field(view, "source_path"),
+			.fragment_constant_offsets = parse_metadata_u32_list(get_metadata_field(view, "fragment_constant_offsets"), "fragment_constant_offsets"),
 			.pipeline_source_hash = parse_metadata_u64(get_metadata_field(view, "pipeline_source_hash"), "pipeline_source_hash"),
 			.pipeline_entry_point = get_metadata_field(view, "pipeline_entry_point"),
 			.pipeline_source_path = get_metadata_field(view, "pipeline_source_path"),
@@ -2792,6 +2911,13 @@ namespace rsx::metal
 		if (!metadata.source_hash || !metadata.source_text_hash)
 		{
 			fmt::throw_exception("Metal shader completion metadata '%s' has a zero shader hash", path);
+		}
+
+		if (metadata.stage != "fragment" && !metadata.fragment_constant_offsets.empty())
+		{
+			fmt::throw_exception("Metal shader completion metadata '%s' retains fragment constant offsets for non-fragment stage '%s'",
+				path,
+				metadata.stage);
 		}
 
 		if (metadata.entry_point.empty())
@@ -2853,6 +2979,7 @@ namespace rsx::metal
 		u64 source_text_hash,
 		const std::string& entry_point,
 		const std::string& source_path,
+		const std::vector<u32>& fragment_constant_offsets,
 		u64 pipeline_source_hash,
 		const std::string& pipeline_entry_point,
 		const std::string& pipeline_source_path,
@@ -2861,11 +2988,12 @@ namespace rsx::metal
 		b8 pipeline_entry_available,
 		shader_completion_metadata& metadata) const
 	{
-		rsx_log.trace("rsx::metal::persistent_shader_cache::find_shader_completion_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+		rsx_log.trace("rsx::metal::persistent_shader_cache::find_shader_completion_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, fragment_constant_count=%u, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
 			stage ? stage : "<null>",
 			shader_id,
 			source_hash,
 			source_text_hash,
+			static_cast<u32>(fragment_constant_offsets.size()),
 			pipeline_source_hash,
 			pipeline_requirement_mask,
 			static_cast<u32>(pipeline_entry_available));
@@ -2890,6 +3018,7 @@ namespace rsx::metal
 			source_text_hash,
 			entry_point,
 			source_path,
+			fragment_constant_offsets,
 			pipeline_source_hash,
 			pipeline_entry_point,
 			pipeline_source_path,
@@ -2913,6 +3042,7 @@ namespace rsx::metal
 		u64 source_text_hash,
 		const std::string& entry_point,
 		const std::string& source_path,
+		const std::vector<u32>& fragment_constant_offsets,
 		u64 pipeline_source_hash,
 		const std::string& pipeline_entry_point,
 		const std::string& pipeline_source_path,
@@ -2922,11 +3052,12 @@ namespace rsx::metal
 		shader_completion_metadata& metadata,
 		std::string& error) const
 	{
-		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_shader_completion_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
+		rsx_log.trace("rsx::metal::persistent_shader_cache::try_find_shader_completion_metadata(stage=%s, shader_id=%u, source_hash=0x%llx, source_text_hash=0x%llx, fragment_constant_count=%u, pipeline_source_hash=0x%llx, pipeline_requirement_mask=0x%x, pipeline_entry_available=%u)",
 			stage ? stage : "<null>",
 			shader_id,
 			source_hash,
 			source_text_hash,
+			static_cast<u32>(fragment_constant_offsets.size()),
 			pipeline_source_hash,
 			pipeline_requirement_mask,
 			static_cast<u32>(pipeline_entry_available));
@@ -2959,6 +3090,7 @@ namespace rsx::metal
 			source_text_hash,
 			entry_point,
 			source_path,
+			fragment_constant_offsets,
 			pipeline_source_hash,
 			pipeline_entry_point,
 			pipeline_source_path,

@@ -472,7 +472,7 @@ void MTLGSRender::on_init_thread()
 
 	m_device = std::make_unique<rsx::metal::device>();
 	m_device->report_capabilities();
-	m_shader_cache = std::make_unique<rsx::metal::persistent_shader_cache>("v1.0");
+	m_shader_cache = std::make_unique<rsx::metal::persistent_shader_cache>("v1.1");
 	m_shader_cache->initialize();
 	m_shader_cache->report();
 	m_shader_compiler = std::make_unique<rsx::metal::shader_compiler>(*m_device, *m_shader_cache);
@@ -1063,6 +1063,7 @@ rsx::metal::render_pipeline_record MTLGSRender::get_current_render_pipeline(cons
 		.label = fmt::format("RPCS3 Metal draw pipeline 0x%llx", pipeline_hash),
 		.vertex = rsx::metal::make_render_pipeline_shader(vertex_shader),
 		.fragment = rsx::metal::make_render_pipeline_shader(fragment_shader),
+		.fragment_constant_offsets = fragment_shader.fragment_constant_offsets,
 		.vertex_layout = rsx::metal::make_vertex_shader_interface_layout(),
 		.fragment_layout = fragment_layout,
 		.color_pixel_format = color_pixel_format,
@@ -1391,6 +1392,11 @@ rsx::metal::prepared_draw_command MTLGSRender::preflight_draw_argument_tables(rs
 
 	rsx::metal::argument_table& vertex_table = m_vertex_argument_tables->acquire();
 	vertex_table.validate_shader_layout(pipeline.primary_layout);
+	if (pipeline.primary_layout.context_buffer_index == rsx::metal::shader_binding_none)
+	{
+		fmt::throw_exception("Metal vertex draw argument layout requires a context buffer slot");
+	}
+
 	if (pipeline.primary_layout.constants_buffer_index == rsx::metal::shader_binding_none)
 	{
 		fmt::throw_exception("Metal vertex draw argument layout requires a constants buffer slot");
@@ -1416,7 +1422,33 @@ rsx::metal::prepared_draw_command MTLGSRender::preflight_draw_argument_tables(rs
 			*(reinterpret_cast<f32*>(bytes + 76)) = rsx::method_registers.clip_min();
 			*(reinterpret_cast<f32*>(bytes + 80)) = rsx::method_registers.clip_max();
 		});
-	vertex_table.bind_buffer_address(pipeline.primary_layout.constants_buffer_index, *vertex_context.resource, vertex_context.offset);
+	if (!vertex_context.resource)
+	{
+		fmt::throw_exception("Metal vertex context upload returned an empty buffer");
+	}
+
+	vertex_table.bind_buffer_address(pipeline.primary_layout.context_buffer_index, *vertex_context.resource, vertex_context.offset);
+
+	constexpr u64 vertex_constants_size = 8192;
+	const rsx::metal::draw_buffer_binding vertex_constants = m_draw_resources->upload_generated_buffer(
+		frame,
+		vertex_constants_size,
+		"RPCS3 Metal vertex constants",
+		[this](void* data, u64 size)
+		{
+			if (size != vertex_constants_size)
+			{
+				fmt::throw_exception("Metal vertex constants buffer size mismatch: size=0x%llx", size);
+			}
+
+			m_draw_processor.fill_vertex_program_constants_data(data, std::span<const u16>{});
+		});
+	if (!vertex_constants.resource)
+	{
+		fmt::throw_exception("Metal vertex constants upload returned an empty buffer");
+	}
+
+	vertex_table.bind_buffer_address(pipeline.primary_layout.constants_buffer_index, *vertex_constants.resource, vertex_constants.offset);
 	const rsx::metal::prepared_draw_command draw_command = prepare_draw_vertex_inputs(frame, vertex_table, pipeline.primary_layout);
 
 	rsx::metal::argument_table* fragment_table_ptr = nullptr;
@@ -1426,6 +1458,11 @@ rsx::metal::prepared_draw_command MTLGSRender::preflight_draw_argument_tables(rs
 		rsx::metal::argument_table& fragment_table = fragment_pool.acquire();
 		fragment_table_ptr = &fragment_table;
 		fragment_table.validate_shader_layout(pipeline.fragment_layout);
+		if (pipeline.fragment_layout.context_buffer_index == rsx::metal::shader_binding_none)
+		{
+			fmt::throw_exception("Metal fragment draw argument layout requires a context buffer slot");
+		}
+
 		if (pipeline.fragment_layout.constants_buffer_index == rsx::metal::shader_binding_none)
 		{
 			fmt::throw_exception("Metal fragment draw argument layout requires a constants buffer slot");
@@ -1445,7 +1482,46 @@ rsx::metal::prepared_draw_command MTLGSRender::preflight_draw_argument_tables(rs
 
 				m_draw_processor.fill_fragment_state_buffer(data, current_fragment_program);
 			});
-		fragment_table.bind_buffer_address(pipeline.fragment_layout.constants_buffer_index, *fragment_context.resource, fragment_context.offset);
+		if (!fragment_context.resource)
+		{
+			fmt::throw_exception("Metal fragment context upload returned an empty buffer");
+		}
+
+		fragment_table.bind_buffer_address(pipeline.fragment_layout.context_buffer_index, *fragment_context.resource, fragment_context.offset);
+
+		const u64 fragment_constants_size = static_cast<u64>(pipeline.fragment_constant_offsets.size()) * 16;
+		if (fragment_constants_size)
+		{
+			const rsx::metal::draw_buffer_binding fragment_constants = m_draw_resources->upload_generated_buffer(
+				frame,
+				fragment_constants_size,
+				"RPCS3 Metal fragment constants",
+				[this, &pipeline](void* data, u64 size)
+				{
+					if (size != static_cast<u64>(pipeline.fragment_constant_offsets.size()) * 16)
+					{
+						fmt::throw_exception("Metal fragment constants buffer size mismatch: size=0x%llx", size);
+					}
+
+					rsx::write_fragment_constants_to_buffer(
+						std::span<f32>(static_cast<f32*>(data), pipeline.fragment_constant_offsets.size() * 4),
+						current_fragment_program,
+						pipeline.fragment_constant_offsets,
+						false);
+				});
+			if (!fragment_constants.resource)
+			{
+				fmt::throw_exception("Metal fragment constants upload returned an empty buffer");
+			}
+
+			fragment_table.bind_buffer_address(pipeline.fragment_layout.constants_buffer_index, *fragment_constants.resource, fragment_constants.offset);
+		}
+		else
+		{
+			rsx::metal::buffer& zero_vertex_buffer = m_draw_resources->zero_vertex_buffer();
+			fragment_table.bind_buffer_address(pipeline.fragment_layout.constants_buffer_index, zero_vertex_buffer, 0);
+		}
+
 		bind_fragment_textures(fragment_table, pipeline.fragment_layout);
 		bind_fragment_samplers(fragment_table, pipeline.fragment_layout);
 	}

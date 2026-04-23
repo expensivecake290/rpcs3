@@ -205,14 +205,15 @@ namespace rsx::metal
 			.argument_table =
 			{
 				.label = "RPCS3 Metal vertex shader argument table",
-				.max_buffers = 4,
+				.max_buffers = 5,
 				.max_textures = 0,
 				.max_samplers = 0,
 				.initialize_bindings = true,
 				.support_attribute_strides = false,
 			},
 			.render_stage_mask = static_cast<u32>(argument_table_render_stage::vertex),
-			.constants_buffer_index = 0,
+			.context_buffer_index = 0,
+			.constants_buffer_index = 4,
 			.vertex_layout_buffer_index = 1,
 			.persistent_vertex_buffer_index = 2,
 			.volatile_vertex_buffer_index = 3,
@@ -238,14 +239,15 @@ namespace rsx::metal
 			.argument_table =
 			{
 				.label = "RPCS3 Metal fragment shader argument table",
-				.max_buffers = 1,
+				.max_buffers = 2,
 				.max_textures = texture_count,
 				.max_samplers = sampler_count,
 				.initialize_bindings = true,
 				.support_attribute_strides = false,
 			},
 			.render_stage_mask = static_cast<u32>(argument_table_render_stage::fragment),
-			.constants_buffer_index = 0,
+			.context_buffer_index = 0,
+			.constants_buffer_index = 1,
 			.texture_base_index = texture_count ? 0 : shader_binding_none,
 			.texture_count = texture_count,
 			.sampler_base_index = sampler_count ? 0 : shader_binding_none,
@@ -267,7 +269,7 @@ namespace rsx::metal
 			.argument_table =
 			{
 				.label = "RPCS3 Metal mesh shader argument table",
-				.max_buffers = 4,
+				.max_buffers = 5,
 				.max_textures = 0,
 				.max_samplers = 0,
 				.initialize_bindings = true,
@@ -276,7 +278,8 @@ namespace rsx::metal
 			.render_stage_mask =
 				static_cast<u32>(argument_table_render_stage::object) |
 				static_cast<u32>(argument_table_render_stage::mesh),
-			.constants_buffer_index = 0,
+			.context_buffer_index = 0,
+			.constants_buffer_index = 4,
 			.vertex_layout_buffer_index = 1,
 			.persistent_vertex_buffer_index = 2,
 			.volatile_vertex_buffer_index = 3,
@@ -417,16 +420,35 @@ namespace rsx::metal
 				layout.argument_table.max_samplers);
 		}
 
-		if (layout.constants_buffer_index != shader_binding_none &&
-			layout.constants_buffer_index >= layout.argument_table.max_buffers)
-		{
-			fmt::throw_exception("Metal shader interface constants buffer index is out of range: index=%u, buffers=%u",
-				layout.constants_buffer_index, layout.argument_table.max_buffers);
-		}
-
+		validate_optional_buffer_binding("context", layout.context_buffer_index, layout.argument_table.max_buffers);
+		validate_optional_buffer_binding("constants", layout.constants_buffer_index, layout.argument_table.max_buffers);
 		validate_optional_buffer_binding("vertex layout", layout.vertex_layout_buffer_index, layout.argument_table.max_buffers);
 		validate_optional_buffer_binding("persistent vertex stream", layout.persistent_vertex_buffer_index, layout.argument_table.max_buffers);
 		validate_optional_buffer_binding("volatile vertex stream", layout.volatile_vertex_buffer_index, layout.argument_table.max_buffers);
+
+		const std::array<u32, 5> unique_buffer_slots =
+		{{
+			layout.context_buffer_index,
+			layout.constants_buffer_index,
+			layout.vertex_layout_buffer_index,
+			layout.persistent_vertex_buffer_index,
+			layout.volatile_vertex_buffer_index,
+		}};
+		for (usz outer = 0; outer < unique_buffer_slots.size(); outer++)
+		{
+			if (unique_buffer_slots[outer] == shader_binding_none)
+			{
+				continue;
+			}
+
+			for (usz inner = outer + 1; inner < unique_buffer_slots.size(); inner++)
+			{
+				if (unique_buffer_slots[outer] == unique_buffer_slots[inner])
+				{
+					fmt::throw_exception("Metal shader interface buffer slot %u is assigned to multiple roles", unique_buffer_slots[outer]);
+				}
+			}
+		}
 		validate_binding_range("vertex buffers", layout.vertex_buffer_base_index, layout.vertex_buffer_count, layout.argument_table.max_buffers);
 		validate_binding_range("textures", layout.texture_base_index, layout.texture_count, layout.argument_table.max_textures);
 		validate_binding_range("samplers", layout.sampler_base_index, layout.sampler_count, layout.argument_table.max_samplers);
@@ -444,11 +466,12 @@ namespace rsx::metal
 	{
 		rsx_log.trace("rsx::metal::describe_shader_interface_layout(stage=%u)", static_cast<u32>(layout.stage));
 
-		return fmt::format("buffers=%u, textures=%u, samplers=%u, stages=0x%x, constants=%u, vertex_layout=%u, persistent_vertex=%u, volatile_vertex=%u, vertex_base=%u, vertex_count=%u",
+		return fmt::format("buffers=%u, textures=%u, samplers=%u, stages=0x%x, context=%u, constants=%u, vertex_layout=%u, persistent_vertex=%u, volatile_vertex=%u, vertex_base=%u, vertex_count=%u",
 			layout.argument_table.max_buffers,
 			layout.argument_table.max_textures,
 			layout.argument_table.max_samplers,
 			layout.render_stage_mask,
+			layout.context_buffer_index,
 			layout.constants_buffer_index,
 			layout.vertex_layout_buffer_index,
 			layout.persistent_vertex_buffer_index,

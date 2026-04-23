@@ -659,6 +659,7 @@ namespace
 		void* pipeline_handle,
 		const rsx::metal::shader_interface_layout& primary_layout,
 		const rsx::metal::shader_interface_layout& fragment_layout,
+		const std::vector<u32>& fragment_constant_offsets,
 		b8 has_fragment_layout,
 		b8 cached,
 		b8 mesh_pipeline)
@@ -676,6 +677,7 @@ namespace
 			.pipeline_handle = pipeline_handle,
 			.primary_layout = primary_layout,
 			.fragment_layout = fragment_layout,
+			.fragment_constant_offsets = fragment_constant_offsets,
 			.cached = cached,
 			.mesh_pipeline = mesh_pipeline,
 			.has_fragment_layout = has_fragment_layout,
@@ -1068,6 +1070,7 @@ namespace rsx::metal
 				(__bridge void*)cached_pipeline,
 				desc.vertex_layout,
 				desc.fragment_layout,
+				desc.fragment_constant_offsets,
 				desc.rasterization_enabled,
 				true,
 				false);
@@ -1173,6 +1176,7 @@ namespace rsx::metal
 				(__bridge void*)pipeline,
 				desc.vertex_layout,
 				desc.fragment_layout,
+				desc.fragment_constant_offsets,
 				desc.rasterization_enabled,
 				false,
 				false);
@@ -1230,6 +1234,7 @@ namespace rsx::metal
 				(__bridge void*)cached_pipeline,
 				desc.mesh_layout,
 				desc.fragment_layout,
+				{},
 				desc.rasterization_enabled,
 				true,
 				true);
@@ -1359,6 +1364,7 @@ namespace rsx::metal
 				(__bridge void*)pipeline,
 				desc.mesh_layout,
 				desc.fragment_layout,
+				{},
 				desc.rasterization_enabled,
 				false,
 				true);
