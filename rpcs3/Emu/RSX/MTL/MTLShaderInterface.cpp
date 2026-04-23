@@ -79,6 +79,23 @@ namespace
 				name, base, count, max_count);
 		}
 	}
+
+	void validate_optional_buffer_binding(const char* name, u32 index, u32 max_count)
+	{
+		rsx_log.trace("validate_optional_buffer_binding(name=%s, index=%u, max_count=%u)",
+			name, index, max_count);
+
+		if (index == rsx::metal::shader_binding_none)
+		{
+			return;
+		}
+
+		if (index >= max_count)
+		{
+			fmt::throw_exception("Metal shader interface buffer binding '%s' is invalid: index=%u, max=%u",
+				name, index, max_count);
+		}
+	}
 }
 
 namespace rsx::metal
@@ -188,16 +205,17 @@ namespace rsx::metal
 			.argument_table =
 			{
 				.label = "RPCS3 Metal vertex shader argument table",
-				.max_buffers = 1 + shader_vertex_input_count,
+				.max_buffers = 4,
 				.max_textures = 0,
 				.max_samplers = 0,
 				.initialize_bindings = true,
-				.support_attribute_strides = true,
+				.support_attribute_strides = false,
 			},
 			.render_stage_mask = static_cast<u32>(argument_table_render_stage::vertex),
 			.constants_buffer_index = 0,
-			.vertex_buffer_base_index = 1,
-			.vertex_buffer_count = shader_vertex_input_count,
+			.vertex_layout_buffer_index = 1,
+			.persistent_vertex_buffer_index = 2,
+			.volatile_vertex_buffer_index = 3,
 		};
 
 		validate_shader_interface_layout(layout);
@@ -249,18 +267,19 @@ namespace rsx::metal
 			.argument_table =
 			{
 				.label = "RPCS3 Metal mesh shader argument table",
-				.max_buffers = 1 + shader_vertex_input_count,
+				.max_buffers = 4,
 				.max_textures = 0,
 				.max_samplers = 0,
 				.initialize_bindings = true,
-				.support_attribute_strides = true,
+				.support_attribute_strides = false,
 			},
 			.render_stage_mask =
 				static_cast<u32>(argument_table_render_stage::object) |
 				static_cast<u32>(argument_table_render_stage::mesh),
 			.constants_buffer_index = 0,
-			.vertex_buffer_base_index = 1,
-			.vertex_buffer_count = shader_vertex_input_count,
+			.vertex_layout_buffer_index = 1,
+			.persistent_vertex_buffer_index = 2,
+			.volatile_vertex_buffer_index = 3,
 			.uses_mesh_grid = true,
 		};
 
@@ -270,12 +289,20 @@ namespace rsx::metal
 
 	void validate_shader_vertex_fetch_layout(const shader_interface_layout& layout)
 	{
-		rsx_log.trace("rsx::metal::validate_shader_vertex_fetch_layout(stage=%u, vertex_base=%u, vertex_count=%u)",
-			static_cast<u32>(layout.stage), layout.vertex_buffer_base_index, layout.vertex_buffer_count);
+		rsx_log.trace("rsx::metal::validate_shader_vertex_fetch_layout(stage=%u, vertex_layout=%u, persistent=%u, volatile=%u, vertex_base=%u, vertex_count=%u)",
+			static_cast<u32>(layout.stage),
+			layout.vertex_layout_buffer_index,
+			layout.persistent_vertex_buffer_index,
+			layout.volatile_vertex_buffer_index,
+			layout.vertex_buffer_base_index,
+			layout.vertex_buffer_count);
 
 		if (layout.stage != shader_stage::vertex && layout.stage != shader_stage::mesh)
 		{
-			if (layout.vertex_buffer_count)
+			if (layout.vertex_buffer_count ||
+				layout.vertex_layout_buffer_index != shader_binding_none ||
+				layout.persistent_vertex_buffer_index != shader_binding_none ||
+				layout.volatile_vertex_buffer_index != shader_binding_none)
 			{
 				fmt::throw_exception("Metal shader interface stage %u cannot define vertex fetch inputs", static_cast<u32>(layout.stage));
 			}
@@ -283,26 +310,47 @@ namespace rsx::metal
 			return;
 		}
 
-		if (layout.vertex_buffer_count != shader_vertex_input_count)
+		if (layout.vertex_layout_buffer_index == shader_binding_none ||
+			layout.persistent_vertex_buffer_index == shader_binding_none ||
+			layout.volatile_vertex_buffer_index == shader_binding_none)
 		{
-			fmt::throw_exception("Metal shader interface requires %u RSX vertex input slots, found %u",
-				shader_vertex_input_count, layout.vertex_buffer_count);
+			fmt::throw_exception("Metal shader interface requires vertex layout, persistent stream, and volatile stream buffer slots");
 		}
 
-		for (const shader_vertex_input_slot& slot : vertex_input_slots())
+		if (layout.vertex_layout_buffer_index == layout.persistent_vertex_buffer_index ||
+			layout.vertex_layout_buffer_index == layout.volatile_vertex_buffer_index ||
+			layout.persistent_vertex_buffer_index == layout.volatile_vertex_buffer_index)
 		{
-			const u32 expected_buffer_index = layout.vertex_buffer_base_index + slot.attribute_index;
+			fmt::throw_exception("Metal shader interface vertex fetch buffer slots must be distinct");
+		}
 
-			if (slot.buffer_index != expected_buffer_index)
+		validate_optional_buffer_binding("vertex layout", layout.vertex_layout_buffer_index, layout.argument_table.max_buffers);
+		validate_optional_buffer_binding("persistent vertex stream", layout.persistent_vertex_buffer_index, layout.argument_table.max_buffers);
+		validate_optional_buffer_binding("volatile vertex stream", layout.volatile_vertex_buffer_index, layout.argument_table.max_buffers);
+
+		if (layout.vertex_buffer_count)
+		{
+			if (layout.vertex_buffer_count != shader_vertex_input_count)
 			{
-				fmt::throw_exception("Metal shader vertex input slot %u has invalid buffer index: slot=%u, expected=%u",
-					slot.attribute_index, slot.buffer_index, expected_buffer_index);
+				fmt::throw_exception("Metal shader interface requires %u RSX vertex input slots when per-attribute fetch is enabled, found %u",
+					shader_vertex_input_count, layout.vertex_buffer_count);
 			}
 
-			if (slot.buffer_index >= layout.argument_table.max_buffers)
+			for (const shader_vertex_input_slot& slot : vertex_input_slots())
 			{
-				fmt::throw_exception("Metal shader vertex input slot %u exceeds argument table buffers: buffer=%u, buffers=%u",
-					slot.attribute_index, slot.buffer_index, layout.argument_table.max_buffers);
+				const u32 expected_buffer_index = layout.vertex_buffer_base_index + slot.attribute_index;
+
+				if (slot.buffer_index != expected_buffer_index)
+				{
+					fmt::throw_exception("Metal shader vertex input slot %u has invalid buffer index: slot=%u, expected=%u",
+						slot.attribute_index, slot.buffer_index, expected_buffer_index);
+				}
+
+				if (slot.buffer_index >= layout.argument_table.max_buffers)
+				{
+					fmt::throw_exception("Metal shader vertex input slot %u exceeds argument table buffers: buffer=%u, buffers=%u",
+						slot.attribute_index, slot.buffer_index, layout.argument_table.max_buffers);
+				}
 			}
 		}
 	}
@@ -376,6 +424,9 @@ namespace rsx::metal
 				layout.constants_buffer_index, layout.argument_table.max_buffers);
 		}
 
+		validate_optional_buffer_binding("vertex layout", layout.vertex_layout_buffer_index, layout.argument_table.max_buffers);
+		validate_optional_buffer_binding("persistent vertex stream", layout.persistent_vertex_buffer_index, layout.argument_table.max_buffers);
+		validate_optional_buffer_binding("volatile vertex stream", layout.volatile_vertex_buffer_index, layout.argument_table.max_buffers);
 		validate_binding_range("vertex buffers", layout.vertex_buffer_base_index, layout.vertex_buffer_count, layout.argument_table.max_buffers);
 		validate_binding_range("textures", layout.texture_base_index, layout.texture_count, layout.argument_table.max_textures);
 		validate_binding_range("samplers", layout.sampler_base_index, layout.sampler_count, layout.argument_table.max_samplers);
@@ -393,12 +444,15 @@ namespace rsx::metal
 	{
 		rsx_log.trace("rsx::metal::describe_shader_interface_layout(stage=%u)", static_cast<u32>(layout.stage));
 
-		return fmt::format("buffers=%u, textures=%u, samplers=%u, stages=0x%x, constants=%u, vertex_base=%u, vertex_count=%u",
+		return fmt::format("buffers=%u, textures=%u, samplers=%u, stages=0x%x, constants=%u, vertex_layout=%u, persistent_vertex=%u, volatile_vertex=%u, vertex_base=%u, vertex_count=%u",
 			layout.argument_table.max_buffers,
 			layout.argument_table.max_textures,
 			layout.argument_table.max_samplers,
 			layout.render_stage_mask,
 			layout.constants_buffer_index,
+			layout.vertex_layout_buffer_index,
+			layout.persistent_vertex_buffer_index,
+			layout.volatile_vertex_buffer_index,
 			layout.vertex_buffer_base_index,
 			layout.vertex_buffer_count);
 	}

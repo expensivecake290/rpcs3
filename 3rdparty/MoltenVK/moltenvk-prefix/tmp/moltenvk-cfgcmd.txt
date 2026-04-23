@@ -1,0 +1,1 @@
+cmd='/Users/anthonygarcia-najera/Documents/GitHub/rpcs3/3rdparty/MoltenVK/MoltenVK/fetchDependencies;--macos'

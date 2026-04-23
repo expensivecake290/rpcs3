@@ -36,6 +36,9 @@ namespace rsx::metal
 		argument_table_desc argument_table;
 		u32 render_stage_mask = 0;
 		u32 constants_buffer_index = shader_binding_none;
+		u32 vertex_layout_buffer_index = shader_binding_none;
+		u32 persistent_vertex_buffer_index = shader_binding_none;
+		u32 volatile_vertex_buffer_index = shader_binding_none;
 		u32 vertex_buffer_base_index = shader_binding_none;
 		u32 vertex_buffer_count = 0;
 		u32 texture_base_index = shader_binding_none;

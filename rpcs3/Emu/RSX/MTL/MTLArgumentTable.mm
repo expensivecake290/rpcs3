@@ -804,6 +804,21 @@ namespace rsx::metal
 			validate_buffer_slot(layout.constants_buffer_index, "constants");
 		}
 
+		if (layout.vertex_layout_buffer_index != shader_binding_none)
+		{
+			validate_buffer_slot(layout.vertex_layout_buffer_index, "vertex layout");
+		}
+
+		if (layout.persistent_vertex_buffer_index != shader_binding_none)
+		{
+			validate_buffer_slot(layout.persistent_vertex_buffer_index, "persistent vertex stream");
+		}
+
+		if (layout.volatile_vertex_buffer_index != shader_binding_none)
+		{
+			validate_buffer_slot(layout.volatile_vertex_buffer_index, "volatile vertex stream");
+		}
+
 		for (u32 index = 0; index < layout.vertex_buffer_count; index++)
 		{
 			validate_buffer_slot(layout.vertex_buffer_base_index + index, "vertex input");

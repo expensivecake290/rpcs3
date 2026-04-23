@@ -19,6 +19,7 @@
 #include "util/fnv_hash.hpp"
 
 #include <array>
+#include <cstring>
 #include <limits>
 #include <span>
 #include <tuple>
@@ -48,14 +49,6 @@ namespace
 		b8 indexed = false;
 	};
 
-	struct metal_vertex_attribute_binding
-	{
-		rsx::metal::draw_buffer_binding buffer{};
-		u64 offset = 0;
-		u32 stride = 0;
-		b8 valid = false;
-	};
-
 	u64 append_pipeline_hash_u32(u64 hash, u32 value)
 	{
 		for (u32 index = 0; index < sizeof(value); index++)
@@ -82,6 +75,7 @@ namespace
 		u32 color_pixel_format,
 		u32 sample_count,
 		u32 topology_class,
+		u32 fragment_texture_slots,
 		u32 color_write_mask,
 		b8 blend_enabled,
 		rsx::blend_factor source_rgb_blend_factor,
@@ -91,12 +85,13 @@ namespace
 		rsx::blend_equation rgb_blend_operation,
 		rsx::blend_equation alpha_blend_operation)
 	{
-		rsx_log.trace("make_draw_pipeline_hash(vertex=0x%llx, fragment=0x%llx, color_pixel_format=%u, sample_count=%u, topology_class=%u, color_mask=0x%x, blend=%u)",
+		rsx_log.trace("make_draw_pipeline_hash(vertex=0x%llx, fragment=0x%llx, color_pixel_format=%u, sample_count=%u, topology_class=%u, fragment_textures=%u, color_mask=0x%x, blend=%u)",
 			vertex.source_hash,
 			fragment.source_hash,
 			color_pixel_format,
 			sample_count,
 			topology_class,
+			fragment_texture_slots,
 			color_write_mask,
 			static_cast<u32>(blend_enabled));
 
@@ -110,6 +105,7 @@ namespace
 		hash = append_pipeline_hash_u32(hash, color_pixel_format);
 		hash = append_pipeline_hash_u32(hash, sample_count);
 		hash = append_pipeline_hash_u32(hash, topology_class);
+		hash = append_pipeline_hash_u32(hash, fragment_texture_slots);
 		hash = append_pipeline_hash_u32(hash, color_write_mask);
 		hash = append_pipeline_hash_u32(hash, static_cast<u32>(blend_enabled));
 		hash = append_pipeline_hash_u32(hash, static_cast<u32>(source_rgb_blend_factor));
@@ -186,6 +182,26 @@ namespace
 		}
 
 		fmt::throw_exception("Metal blend state active color index out of range: index=%u", color_index);
+	}
+
+	u32 get_fragment_texture_slot_count(u32 referenced_textures_mask)
+	{
+		rsx_log.trace("get_fragment_texture_slot_count(referenced_textures_mask=0x%x)", referenced_textures_mask);
+
+		u32 slot_count = 0;
+		for (u32 mask = referenced_textures_mask; mask; mask >>= 1)
+		{
+			slot_count++;
+		}
+
+		if (slot_count > rsx::limits::fragment_textures_count)
+		{
+			fmt::throw_exception("Metal fragment texture slot count exceeds RSX limits: count=%u, limit=%u",
+				slot_count,
+				static_cast<u32>(rsx::limits::fragment_textures_count));
+		}
+
+		return slot_count;
 	}
 
 	metal_vertex_input_state get_array_vertex_input_state(const rsx::draw_array_command&)
@@ -472,13 +488,17 @@ void MTLGSRender::on_init_thread()
 	m_render_target_cache = std::make_unique<rsx::metal::render_target_cache>(*m_device);
 	m_render_target_cache->report();
 	m_render_state_cache = std::make_unique<rsx::metal::render_state_cache>(*m_device);
+	m_sampler_cache = std::make_unique<rsx::metal::sampler_cache>(*m_device);
+	m_sampler_cache->report();
+	m_texture_cache = std::make_unique<rsx::metal::sampled_texture_cache>(*m_device);
+	m_texture_cache->report();
 	m_draw_resources = std::make_unique<rsx::metal::draw_resource_manager>(*m_device);
 	m_draw_resources->report();
 
 	const rsx::metal::shader_interface_layout vertex_layout = rsx::metal::make_vertex_shader_interface_layout();
 	const rsx::metal::shader_interface_layout fragment_layout = rsx::metal::make_fragment_shader_interface_layout(0, 0);
 	m_vertex_argument_tables = std::make_unique<rsx::metal::argument_table_pool>(*m_device, vertex_layout.argument_table);
-	m_fragment_argument_tables = std::make_unique<rsx::metal::argument_table_pool>(*m_device, fragment_layout.argument_table);
+	get_fragment_argument_table_pool(fragment_layout);
 	report_backend_state();
 
 	m_window = std::make_unique<rsx::metal::native_window>(initial_width, initial_height);
@@ -507,9 +527,11 @@ void MTLGSRender::on_exit()
 	m_presentation.reset();
 	m_render_target_cache.reset();
 	m_render_state_cache.reset();
+	m_sampler_cache.reset();
+	m_texture_cache.reset();
 	m_draw_resources.reset();
 	m_vertex_argument_tables.reset();
-	m_fragment_argument_tables.reset();
+	m_fragment_argument_table_pools.clear();
 	m_queue.reset();
 	m_window.reset();
 	m_render_pipeline_cache.reset();
@@ -561,6 +583,10 @@ void MTLGSRender::end()
 
 	rsx::metal::command_frame& frame = m_queue->begin_frame();
 	frame.use_residency_set(m_device->residency_set_handle());
+	if (pipeline.has_fragment_layout)
+	{
+		prepare_fragment_textures(frame, pipeline.fragment_layout);
+	}
 
 	{
 		rsx::metal::draw_render_encoder_scope draw_encoder(frame, binding);
@@ -911,11 +937,20 @@ void MTLGSRender::report_backend_state() const
 		draw_resource_stats.reused_buffer_count,
 		draw_resource_stats.uploaded_buffer_count,
 		draw_resource_stats.uploaded_byte_count);
-	rsx_log.notice("Metal backend draw argument table pools: vertex=%u, fragment=%u",
+	rsx_log.notice("Metal backend draw argument table pools: vertex=%u, fragment=%u, fragment_variants=%u",
 		m_vertex_argument_tables ? m_vertex_argument_tables->retained_table_count() : 0,
-		m_fragment_argument_tables ? m_fragment_argument_tables->retained_table_count() : 0);
+		retained_fragment_argument_table_count(),
+		static_cast<u32>(m_fragment_argument_table_pools.size()));
 	rsx_log.notice("Metal backend render state cache: depth_stencil_states=%u",
 		m_render_state_cache ? m_render_state_cache->retained_depth_stencil_state_count() : 0);
+	if (m_sampler_cache)
+	{
+		m_sampler_cache->report();
+	}
+	if (m_texture_cache)
+	{
+		m_texture_cache->report();
+	}
 	rsx_log.warning("Metal backend render pipeline entrypoints remain gated; helper MSL, shader source metadata, dynamic libraries, and pipeline archive plumbing are initialized only for validated Phase 4 paths");
 }
 
@@ -993,6 +1028,8 @@ rsx::metal::render_pipeline_record MTLGSRender::get_current_render_pipeline(cons
 	const rsx::metal::translated_shader vertex_shader = m_shader_recompiler->translate_vertex_program(current_vertex_program, vertex_id);
 	const rsx::metal::translated_shader fragment_shader = m_shader_recompiler->translate_fragment_program(current_fragment_program, fragment_id);
 
+	const u32 fragment_texture_slots = get_fragment_texture_slot_count(current_fp_metadata.referenced_textures_mask);
+	const rsx::metal::shader_interface_layout fragment_layout = rsx::metal::make_fragment_shader_interface_layout(fragment_texture_slots, fragment_texture_slots);
 	const u32 color_pixel_format = m_render_target_cache->get_color_target_metal_pixel_format(m_framebuffer_layout, active_color_index);
 	const u32 sample_count = get_format_sample_count(m_framebuffer_layout.aa_mode);
 	const u32 topology_class = rsx::metal::get_render_pipeline_topology_class(rsx::method_registers.current_draw_clause.primitive);
@@ -1010,6 +1047,7 @@ rsx::metal::render_pipeline_record MTLGSRender::get_current_render_pipeline(cons
 		color_pixel_format,
 		sample_count,
 		topology_class,
+		fragment_texture_slots,
 		color_write_mask,
 		blend_enabled,
 		source_rgb_blend_factor,
@@ -1026,7 +1064,7 @@ rsx::metal::render_pipeline_record MTLGSRender::get_current_render_pipeline(cons
 		.vertex = rsx::metal::make_render_pipeline_shader(vertex_shader),
 		.fragment = rsx::metal::make_render_pipeline_shader(fragment_shader),
 		.vertex_layout = rsx::metal::make_vertex_shader_interface_layout(),
-		.fragment_layout = rsx::metal::make_fragment_shader_interface_layout(0, 0),
+		.fragment_layout = fragment_layout,
 		.color_pixel_format = color_pixel_format,
 		.raster_sample_count = sample_count,
 		.input_primitive_topology = topology_class,
@@ -1171,23 +1209,28 @@ rsx::metal::dynamic_render_state_desc MTLGSRender::get_current_dynamic_render_st
 
 rsx::metal::prepared_draw_command MTLGSRender::prepare_draw_vertex_inputs(rsx::metal::command_frame& frame, rsx::metal::argument_table& vertex_table, const rsx::metal::shader_interface_layout& layout)
 {
-	rsx_log.trace("MTLGSRender::prepare_draw_vertex_inputs(frame_index=%u, layout_stage=%u, vertex_base=%u, vertex_count=%u)",
+	rsx_log.trace("MTLGSRender::prepare_draw_vertex_inputs(frame_index=%u, layout_stage=%u, vertex_layout=%u, persistent=%u, volatile=%u)",
 		frame.frame_index(),
 		static_cast<u32>(layout.stage),
-		layout.vertex_buffer_base_index,
-		layout.vertex_buffer_count);
+		layout.vertex_layout_buffer_index,
+		layout.persistent_vertex_buffer_index,
+		layout.volatile_vertex_buffer_index);
 
 	if (!m_draw_resources)
 	{
 		fmt::throw_exception("Metal backend draw resources are not initialized");
 	}
 
-	if (layout.vertex_buffer_base_index == rsx::metal::shader_binding_none ||
-		layout.vertex_buffer_count != rsx::metal::shader_vertex_input_count)
+	if (layout.vertex_layout_buffer_index == rsx::metal::shader_binding_none ||
+		layout.persistent_vertex_buffer_index == rsx::metal::shader_binding_none ||
+		layout.volatile_vertex_buffer_index == rsx::metal::shader_binding_none)
 	{
-		fmt::throw_exception("Metal vertex input binding requires %u attribute slots, found base=%u count=%u",
-			rsx::metal::shader_vertex_input_count,
-			layout.vertex_buffer_base_index,
+		fmt::throw_exception("Metal vertex input binding requires layout, persistent stream, and volatile stream slots");
+	}
+
+	if (layout.vertex_buffer_count)
+	{
+		fmt::throw_exception("Metal vertex input binding uses packed RSX fetch streams, found %u per-attribute slots",
 			layout.vertex_buffer_count);
 	}
 
@@ -1249,145 +1292,56 @@ rsx::metal::prepared_draw_command MTLGSRender::prepare_draw_vertex_inputs(rsx::m
 			});
 	}
 
-	std::array<metal_vertex_attribute_binding, rsx::metal::shader_vertex_input_count> attributes{};
-
-	u64 volatile_offset = 0;
-	if (rsx::method_registers.current_draw_clause.command != rsx::draw_command::inlined_array &&
-		rsx::method_registers.current_draw_clause.is_immediate_draw)
-	{
-		for (const auto& info : m_vertex_layout.volatile_blocks)
-		{
-			if (info.first >= attributes.size())
-			{
-				fmt::throw_exception("Metal volatile vertex attribute index out of range: index=%u", info.first);
-			}
-
-			if (!vertex_state.allocated_vertex_count || info.second % vertex_state.allocated_vertex_count)
-			{
-				fmt::throw_exception("Metal volatile vertex block is not divisible by vertex count: attribute=%u, size=0x%x, vertices=%u",
-					info.first,
-					info.second,
-					vertex_state.allocated_vertex_count);
-			}
-
-			attributes[info.first] =
-			{
-				.buffer = volatile_stream,
-				.offset = volatile_offset,
-				.stride = info.second / vertex_state.allocated_vertex_count,
-				.valid = true,
-			};
-			volatile_offset += info.second;
-		}
-	}
-
-	for (const u8 index : m_vertex_layout.referenced_registers)
-	{
-		if (index >= attributes.size())
-		{
-			fmt::throw_exception("Metal register vertex attribute index out of range: index=%u", index);
-		}
-
-		attributes[index] =
-		{
-			.buffer = volatile_stream,
-			.offset = volatile_offset,
-			.stride = 16,
-			.valid = true,
-		};
-		volatile_offset += 16;
-	}
-
-	if (rsx::method_registers.current_draw_clause.command == rsx::draw_command::inlined_array)
-	{
-		if (m_vertex_layout.interleaved_blocks.empty())
-		{
-			fmt::throw_exception("Metal inlined vertex attribute binding requires an interleaved block");
-		}
-
-		const rsx::interleaved_range_info* block = m_vertex_layout.interleaved_blocks[0];
-		u64 inline_offset = volatile_offset;
-		for (const rsx::interleaved_attribute_t& attribute : block->locations)
-		{
-			if (attribute.index >= attributes.size())
-			{
-				fmt::throw_exception("Metal inlined vertex attribute index out of range: index=%u", attribute.index);
-			}
-
-			const auto& info = rsx::method_registers.vertex_arrays_info[attribute.index];
-			const u32 attribute_size = rsx::get_vertex_type_size_on_host(info.type(), info.size());
-			attributes[attribute.index] =
-			{
-				.buffer = volatile_stream,
-				.offset = inline_offset,
-				.stride = block->attribute_stride,
-				.valid = true,
-			};
-			inline_offset += attribute_size;
-		}
-	}
-	else
-	{
-		u64 persistent_offset = 0;
-		for (rsx::interleaved_range_info* block : m_vertex_layout.interleaved_blocks)
-		{
-			const std::pair<u32, u32> range = block->calculate_required_range(
-				vertex_state.first_vertex,
-				vertex_state.allocated_vertex_count);
-
-			for (const rsx::interleaved_attribute_t& attribute : block->locations)
-			{
-				if (attribute.index >= attributes.size())
-				{
-					fmt::throw_exception("Metal persistent vertex attribute index out of range: index=%u", attribute.index);
-				}
-
-				const auto& info = rsx::method_registers.vertex_arrays_info[attribute.index];
-				const u32 local_address = info.offset() & 0x7fffffff;
-				if (local_address < block->base_offset)
-				{
-					fmt::throw_exception("Metal persistent vertex attribute address precedes block base: attribute=%u, address=0x%x, base=0x%x",
-						attribute.index,
-						local_address,
-						block->base_offset);
-				}
-
-				attributes[attribute.index] =
-				{
-					.buffer = persistent_stream,
-					.offset = persistent_offset + (local_address - block->base_offset),
-					.stride = block->attribute_stride,
-					.valid = true,
-				};
-			}
-
-			persistent_offset += block->attribute_stride * range.second;
-		}
-	}
-
 	rsx::metal::buffer& zero_vertex_buffer = m_draw_resources->zero_vertex_buffer();
-	for (u32 attribute = 0; attribute < layout.vertex_buffer_count; attribute++)
+	constexpr u64 vertex_layout_state_size = sizeof(s32) * 2 * rsx::metal::shader_vertex_input_count;
+	const rsx::metal::draw_buffer_binding vertex_layout_state = m_draw_resources->upload_generated_buffer(
+		frame,
+		vertex_layout_state_size,
+		"RPCS3 Metal vertex fetch layout",
+		[this, first_vertex = vertex_state.first_vertex, vertex_count = vertex_state.allocated_vertex_count](void* data, u64 size)
+		{
+			if (size != vertex_layout_state_size)
+			{
+				fmt::throw_exception("Metal vertex fetch layout buffer size mismatch: size=0x%llx", size);
+			}
+
+			std::memset(data, 0, static_cast<usz>(size));
+			m_draw_processor.fill_vertex_layout_state(
+				m_vertex_layout,
+				current_vp_metadata,
+				first_vertex,
+				vertex_count,
+				static_cast<s32*>(data),
+				0,
+				0);
+		});
+
+	if (!vertex_layout_state.resource)
 	{
-		const u32 table_index = layout.vertex_buffer_base_index + attribute;
-		const metal_vertex_attribute_binding& binding = attributes[attribute];
-		if (!binding.valid)
-		{
-			vertex_table.bind_vertex_buffer_address(table_index, zero_vertex_buffer, 0, 16);
-			continue;
-		}
-
-		if (!binding.buffer.resource)
-		{
-			fmt::throw_exception("Metal vertex attribute %u references an empty upload stream", attribute);
-		}
-
-		if (!binding.stride)
-		{
-			fmt::throw_exception("Metal vertex attribute %u has a zero stride", attribute);
-		}
-
-		vertex_table.bind_vertex_buffer_address(table_index, *binding.buffer.resource, binding.offset, binding.stride);
+		fmt::throw_exception("Metal vertex fetch layout upload returned an empty buffer");
 	}
+
+	if (required.first && !persistent_stream.resource)
+	{
+		fmt::throw_exception("Metal persistent vertex stream upload returned an empty buffer");
+	}
+
+	if (required.second && !volatile_stream.resource)
+	{
+		fmt::throw_exception("Metal volatile vertex stream upload returned an empty buffer");
+	}
+
+	vertex_table.bind_buffer_address(layout.vertex_layout_buffer_index, *vertex_layout_state.resource, vertex_layout_state.offset);
+
+	vertex_table.bind_buffer_address(
+		layout.persistent_vertex_buffer_index,
+		required.first ? *persistent_stream.resource : zero_vertex_buffer,
+		required.first ? persistent_stream.offset : 0);
+
+	vertex_table.bind_buffer_address(
+		layout.volatile_vertex_buffer_index,
+		required.second ? *volatile_stream.resource : zero_vertex_buffer,
+		required.second ? volatile_stream.offset : 0);
 
 	rsx_log.trace("Metal vertex input upload: draw_vertices=%u allocated_vertices=%u first_vertex=%u persistent=0x%x volatile=0x%x indexed=%u index_count=%u index_type=%u index_range=%u..%u base_vertex=%lld",
 		vertex_state.vertex_draw_count,
@@ -1419,9 +1373,9 @@ rsx::metal::prepared_draw_command MTLGSRender::preflight_draw_argument_tables(rs
 		fmt::throw_exception("Metal backend draw argument table preflight requires a valid render encoder");
 	}
 
-	if (!m_vertex_argument_tables || !m_fragment_argument_tables)
+	if (!m_vertex_argument_tables)
 	{
-		fmt::throw_exception("Metal backend draw argument table pools are not initialized");
+		fmt::throw_exception("Metal backend vertex argument table pool is not initialized");
 	}
 
 	if (!m_draw_resources)
@@ -1468,7 +1422,8 @@ rsx::metal::prepared_draw_command MTLGSRender::preflight_draw_argument_tables(rs
 	rsx::metal::argument_table* fragment_table_ptr = nullptr;
 	if (pipeline.has_fragment_layout)
 	{
-		rsx::metal::argument_table& fragment_table = m_fragment_argument_tables->acquire();
+		rsx::metal::argument_table_pool& fragment_pool = get_fragment_argument_table_pool(pipeline.fragment_layout);
+		rsx::metal::argument_table& fragment_table = fragment_pool.acquire();
 		fragment_table_ptr = &fragment_table;
 		fragment_table.validate_shader_layout(pipeline.fragment_layout);
 		if (pipeline.fragment_layout.constants_buffer_index == rsx::metal::shader_binding_none)
@@ -1491,10 +1446,225 @@ rsx::metal::prepared_draw_command MTLGSRender::preflight_draw_argument_tables(rs
 				m_draw_processor.fill_fragment_state_buffer(data, current_fragment_program);
 			});
 		fragment_table.bind_buffer_address(pipeline.fragment_layout.constants_buffer_index, *fragment_context.resource, fragment_context.offset);
+		bind_fragment_textures(fragment_table, pipeline.fragment_layout);
+		bind_fragment_samplers(fragment_table, pipeline.fragment_layout);
 	}
 
 	rsx::metal::bind_pipeline_arguments(frame, render_encoder_handle, pipeline, vertex_table, fragment_table_ptr);
 	return draw_command;
+}
+
+rsx::metal::argument_table_pool& MTLGSRender::get_fragment_argument_table_pool(const rsx::metal::shader_interface_layout& layout)
+{
+	rsx_log.trace("MTLGSRender::get_fragment_argument_table_pool(stage=%u, buffers=%u, textures=%u, samplers=%u)",
+		static_cast<u32>(layout.stage),
+		layout.argument_table.max_buffers,
+		layout.argument_table.max_textures,
+		layout.argument_table.max_samplers);
+
+	rsx::metal::validate_shader_interface_layout(layout);
+	if (layout.stage != rsx::metal::shader_stage::fragment)
+	{
+		fmt::throw_exception("Metal fragment argument table pool requested for shader stage %u",
+			static_cast<u32>(layout.stage));
+	}
+
+	if (!m_device)
+	{
+		fmt::throw_exception("Metal fragment argument table pool requested before device initialization");
+	}
+
+	const rsx::metal::argument_table_desc& desc = layout.argument_table;
+	for (fragment_argument_table_pool_record& record : m_fragment_argument_table_pools)
+	{
+		if (record.max_buffers == desc.max_buffers &&
+			record.max_textures == desc.max_textures &&
+			record.max_samplers == desc.max_samplers &&
+			record.support_attribute_strides == desc.support_attribute_strides)
+		{
+			ensure(record.pool);
+			return *record.pool;
+		}
+	}
+
+	fragment_argument_table_pool_record record =
+	{
+		.max_buffers = desc.max_buffers,
+		.max_textures = desc.max_textures,
+		.max_samplers = desc.max_samplers,
+		.support_attribute_strides = desc.support_attribute_strides,
+		.pool = std::make_unique<rsx::metal::argument_table_pool>(*m_device, desc),
+	};
+
+	m_fragment_argument_table_pools.emplace_back(std::move(record));
+	return *m_fragment_argument_table_pools.back().pool;
+}
+
+void MTLGSRender::prepare_fragment_textures(rsx::metal::command_frame& frame, const rsx::metal::shader_interface_layout& layout)
+{
+	rsx_log.trace("MTLGSRender::prepare_fragment_textures(frame_index=%u, texture_count=%u, referenced=0x%x)",
+		frame.frame_index(),
+		layout.texture_count,
+		current_fp_metadata.referenced_textures_mask);
+
+	rsx::metal::validate_shader_interface_layout(layout);
+	if (layout.stage != rsx::metal::shader_stage::fragment)
+	{
+		fmt::throw_exception("Metal fragment texture preparation requested for shader stage %u",
+			static_cast<u32>(layout.stage));
+	}
+
+	if (!layout.texture_count)
+	{
+		return;
+	}
+
+	if (!m_texture_cache)
+	{
+		fmt::throw_exception("Metal fragment texture preparation requested before texture cache initialization");
+	}
+
+	for (u32 texture_index = 0; texture_index < layout.texture_count; texture_index++)
+	{
+		const u32 reference_mask = 1u << texture_index;
+		if ((current_fp_metadata.referenced_textures_mask & reference_mask) == 0)
+		{
+			rsx_log.todo("MTLGSRender::prepare_fragment_textures() sparse fragment texture layouts are not implemented");
+			fmt::throw_exception("Metal backend sparse fragment texture layout is not implemented yet");
+		}
+
+		const rsx::fragment_texture& texture = rsx::method_registers.fragment_textures[texture_index];
+		if (!texture.enabled())
+		{
+			rsx_log.todo("MTLGSRender::prepare_fragment_textures() disabled referenced fragment texture %u is not implemented", texture_index);
+			fmt::throw_exception("Metal backend referenced fragment texture %u is disabled", texture_index);
+		}
+
+		m_texture_cache->prepare_fragment_texture(frame, texture, texture_index);
+	}
+}
+
+void MTLGSRender::bind_fragment_textures(rsx::metal::argument_table& fragment_table, const rsx::metal::shader_interface_layout& layout)
+{
+	rsx_log.trace("MTLGSRender::bind_fragment_textures(texture_count=%u, referenced=0x%x)",
+		layout.texture_count,
+		current_fp_metadata.referenced_textures_mask);
+
+	rsx::metal::validate_shader_interface_layout(layout);
+	if (layout.stage != rsx::metal::shader_stage::fragment)
+	{
+		fmt::throw_exception("Metal fragment texture binding requested for shader stage %u",
+			static_cast<u32>(layout.stage));
+	}
+
+	if (!layout.texture_count)
+	{
+		return;
+	}
+
+	if (layout.texture_base_index == rsx::metal::shader_binding_none)
+	{
+		fmt::throw_exception("Metal fragment texture binding requires a valid texture base index");
+	}
+
+	if (!m_texture_cache)
+	{
+		fmt::throw_exception("Metal fragment texture binding requested before texture cache initialization");
+	}
+
+	for (u32 texture_index = 0; texture_index < layout.texture_count; texture_index++)
+	{
+		const u32 reference_mask = 1u << texture_index;
+		if ((current_fp_metadata.referenced_textures_mask & reference_mask) == 0)
+		{
+			rsx_log.todo("MTLGSRender::bind_fragment_textures() sparse fragment texture layouts are not implemented");
+			fmt::throw_exception("Metal backend sparse fragment texture layout is not implemented yet");
+		}
+
+		const rsx::fragment_texture& texture = rsx::method_registers.fragment_textures[texture_index];
+		if (!texture.enabled())
+		{
+			rsx_log.todo("MTLGSRender::bind_fragment_textures() disabled referenced fragment texture %u is not implemented", texture_index);
+			fmt::throw_exception("Metal backend referenced fragment texture %u is disabled", texture_index);
+		}
+
+		rsx::metal::texture& sampled_texture = m_texture_cache->get_fragment_texture(texture, texture_index);
+		fragment_table.bind_texture(layout.texture_base_index + texture_index, sampled_texture);
+	}
+}
+
+void MTLGSRender::bind_fragment_samplers(rsx::metal::argument_table& fragment_table, const rsx::metal::shader_interface_layout& layout)
+{
+	rsx_log.trace("MTLGSRender::bind_fragment_samplers(texture_count=%u, sampler_count=%u, referenced=0x%x)",
+		layout.texture_count,
+		layout.sampler_count,
+		current_fp_metadata.referenced_textures_mask);
+
+	rsx::metal::validate_shader_interface_layout(layout);
+	if (layout.stage != rsx::metal::shader_stage::fragment)
+	{
+		fmt::throw_exception("Metal fragment sampler binding requested for shader stage %u",
+			static_cast<u32>(layout.stage));
+	}
+
+	if (!layout.sampler_count)
+	{
+		return;
+	}
+
+	if (layout.sampler_base_index == rsx::metal::shader_binding_none)
+	{
+		fmt::throw_exception("Metal fragment sampler binding requires a valid sampler base index");
+	}
+
+	if (!m_sampler_cache)
+	{
+		fmt::throw_exception("Metal fragment sampler binding requested before sampler cache initialization");
+	}
+
+	for (u32 texture_index = 0; texture_index < layout.sampler_count; texture_index++)
+	{
+		const u32 reference_mask = 1u << texture_index;
+		if ((current_fp_metadata.referenced_textures_mask & reference_mask) == 0)
+		{
+			rsx_log.todo("MTLGSRender::bind_fragment_samplers() sparse fragment sampler layouts are not implemented");
+			fmt::throw_exception("Metal backend sparse fragment sampler layout is not implemented yet");
+		}
+
+		const rsx::fragment_texture& texture = rsx::method_registers.fragment_textures[texture_index];
+		if (!texture.enabled())
+		{
+			rsx_log.todo("MTLGSRender::bind_fragment_samplers() disabled referenced fragment texture %u is not implemented", texture_index);
+			fmt::throw_exception("Metal backend referenced fragment texture %u is disabled", texture_index);
+		}
+
+		rsx::metal::sampler& sampler = m_sampler_cache->get_fragment_sampler(texture, texture.get_exact_mipmap_count() > 1);
+		fragment_table.bind_sampler(layout.sampler_base_index + texture_index, sampler);
+	}
+}
+
+u32 MTLGSRender::retained_fragment_argument_table_count() const
+{
+	rsx_log.trace("MTLGSRender::retained_fragment_argument_table_count()");
+
+	u32 count = 0;
+	for (const fragment_argument_table_pool_record& record : m_fragment_argument_table_pools)
+	{
+		if (!record.pool)
+		{
+			continue;
+		}
+
+		const u32 pool_count = record.pool->retained_table_count();
+		if (count > std::numeric_limits<u32>::max() - pool_count)
+		{
+			fmt::throw_exception("Metal fragment argument table retained count overflow");
+		}
+
+		count += pool_count;
+	}
+
+	return count;
 }
 
 void MTLGSRender::update_draw_target_state(const rsx::metal::draw_target_binding& binding)

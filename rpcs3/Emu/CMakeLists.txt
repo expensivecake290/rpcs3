@@ -678,6 +678,7 @@ if(APPLE AND USE_METAL)
             RSX/MTL/MTLSampler.mm
             RSX/MTL/MTLSynchronization.mm
             RSX/MTL/MTLTexture.mm
+            RSX/MTL/MTLTextureCache.mm
             RSX/MTL/MTLTextureViewPool.mm
         )
 
@@ -693,6 +694,7 @@ if(APPLE AND USE_METAL)
             RSX/MTL/MTLShaderEntrypointBuilder.cpp
             RSX/MTL/MTLShaderInterface.cpp
             RSX/MTL/MTLShaderRecompiler.cpp
+            RSX/MTL/MTLSamplerCache.cpp
         )
 
         set_source_files_properties(${RPCS3_MTL_OBJCXX_SOURCES} PROPERTIES
