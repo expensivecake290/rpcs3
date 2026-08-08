@@ -34,8 +34,27 @@ endif()
 # subdirectories
 add_subdirectory(Emu)
 
+# Homebrew's Vulkan headers use C-style casts inside version macros. RPCS3
+# treats old-style casts as errors, so scope the compatibility exception to the
+# emulator target when using the installed Apple Vulkan stack.
+if(APPLE AND USE_SYSTEM_MVK)
+    target_compile_options(rpcs3_emu PRIVATE -Wno-old-style-cast)
+endif()
+
 if (NOT ANDROID)
     add_subdirectory(rpcs3qt)
+
+    # TrinityRSX supplies a narrow application-facing bridge without changing
+    # RPCS3's core ownership or public internal object model.
+    if(DEFINED TRINITYRSX_BRIDGE_SOURCE_DIR AND EXISTS "${TRINITYRSX_BRIDGE_SOURCE_DIR}/TrinityBridge.mm")
+        target_sources(rpcs3_ui PRIVATE
+            "${TRINITYRSX_BRIDGE_SOURCE_DIR}/TrinityBridge.mm"
+        )
+        target_include_directories(rpcs3_ui PRIVATE
+            "${TRINITYRSX_BRIDGE_SOURCE_DIR}"
+        )
+        target_compile_definitions(rpcs3_ui PRIVATE TRINITYRSX_BRIDGE_ENABLED=1)
+    endif()
 endif()
 
 gen_git_version(${CMAKE_CURRENT_SOURCE_DIR})

@@ -10,6 +10,10 @@
 #include "Emu/Io/Null/null_music_handler.h"
 #include "util/video_source.h"
 
+#ifdef TRINITYRSX_BRIDGE_ENABLED
+#include "TrinityBridge.h"
+#endif
+
 #include <clocale>
 
 LOG_CHANNEL(sys_log, "SYS");
@@ -28,6 +32,10 @@ bool headless_application::Init()
 
 	// Create callbacks from the emulator, which reference the handlers.
 	InitializeCallbacks();
+
+#ifdef TRINITYRSX_BRIDGE_ENABLED
+	trinityrsx_bridge_attach();
+#endif
 
 	// Create connects to propagate events throughout Gui.
 	InitializeConnects();
