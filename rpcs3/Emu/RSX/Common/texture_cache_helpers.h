@@ -206,7 +206,7 @@ namespace rsx
 					{
 						// The range clips the destination but does not fit inside it
 						// Use DMA stream to optimize the flush that is likely to happen when flipping
-						return { true };
+						return { true, 0, 0, 0 };
 					}
 				}
 			}

@@ -3,7 +3,7 @@
 #include "util/types.hpp"
 
 template <typename T>
-concept Vector128 = (sizeof(T) == 16) && (std::is_trivial_v<T>);
+concept Vector128Type = (sizeof(T) == 16) && (std::is_trivial_v<T>);
 
 // 128-bit vector type
 union alignas(16) v128
@@ -65,7 +65,7 @@ union alignas(16) v128
 
 	constexpr v128(const v128&) noexcept = default;
 
-	template <Vector128 T>
+	template <Vector128Type T>
 	constexpr v128(const T& rhs) noexcept
 		: v128(std::bit_cast<v128>(rhs))
 	{
@@ -73,7 +73,7 @@ union alignas(16) v128
 
 	constexpr v128& operator=(const v128&) noexcept = default;
 
-	template <Vector128 T>
+	template <Vector128Type T>
 	constexpr operator T() const noexcept
 	{
 		return std::bit_cast<T>(*this);

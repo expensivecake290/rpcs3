@@ -608,7 +608,7 @@ inline v128 ppu_select_vnan(v128 a, v128 b)
 	return gv_selectfs(gv_eqfs(a, a), b, a | gv_bcst32(0x7fc00000u));
 }
 
-inline v128 ppu_select_vnan(v128 a, v128 b, Vector128 auto... args)
+inline v128 ppu_select_vnan(v128 a, v128 b, Vector128Type auto... args)
 {
 	return ppu_select_vnan(a, ppu_select_vnan(b, args...));
 }
@@ -633,7 +633,7 @@ inline v128 ppu_fix_vnan(v128 r)
 }
 
 template <ppu_exec_bit... Flags>
-inline v128 ppu_set_vnan(v128 r, Vector128 auto... args)
+inline v128 ppu_set_vnan(v128 r, Vector128Type auto... args)
 {
 	if constexpr (((Flags == set_vnan) || ...) && sizeof...(args) > 0)
 	{
