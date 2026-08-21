@@ -364,6 +364,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	r_creator->update_names(
 	{
 		m_emu_settings->GetLocalizedSetting(QString("Vulkan"), emu_settings_type::Renderer, static_cast<int>(video_renderer::vulkan), true),
+		m_emu_settings->GetLocalizedSetting(QString("Metal"), emu_settings_type::Renderer, static_cast<int>(video_renderer::metal), true),
 		m_emu_settings->GetLocalizedSetting(QString("OpenGl"), emu_settings_type::Renderer, static_cast<int>(video_renderer::opengl), true),
 		m_emu_settings->GetLocalizedSetting(QString("Null"), emu_settings_type::Renderer, static_cast<int>(video_renderer::null), true)
 	});
@@ -829,12 +830,15 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		const bool is_vulkan = (text == r_creator->Vulkan.name);
 		ui->asyncTextureStreaming->setEnabled(is_vulkan);
 		ui->vulkansched->setEnabled(is_vulkan);
+		ui->disableVulkanMemAllocator->setEnabled(is_vulkan);
+		ui->useReBAR->setEnabled(is_vulkan);
 	};
 
-	const auto apply_fsr_specific_options = [this]()
+	const auto apply_fsr_specific_options = [r_creator, this]()
 	{
 		const auto [text, value] = get_data(ui->outputScalingMode, ui->outputScalingMode->currentIndex());
-		const bool fsr_selected = static_cast<output_scaling_mode>(value) == output_scaling_mode::fsr;
+		const bool fsr_selected = static_cast<output_scaling_mode>(value) == output_scaling_mode::fsr &&
+			ui->renderBox->currentText() != r_creator->Metal.name;
 		ui->fsrSharpeningStrength->setEnabled(fsr_selected);
 		ui->fsrSharpeningStrengthReset->setEnabled(fsr_selected);
 	};
@@ -1891,7 +1895,9 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		rpcs3::title_format_data title_data;
 		title_data.format = format.toStdString();
 		title_data.renderer = m_emu_settings->GetSetting(emu_settings_type::Renderer);
-		title_data.vulkan_adapter = m_emu_settings->GetSetting(emu_settings_type::VulkanAdapter);
+		title_data.graphics_adapter = title_data.renderer == "Metal"
+			? m_emu_settings->GetSetting(emu_settings_type::MetalAdapter)
+			: m_emu_settings->GetSetting(emu_settings_type::VulkanAdapter);
 		title_data.fps = 60.;
 
 		if (game)

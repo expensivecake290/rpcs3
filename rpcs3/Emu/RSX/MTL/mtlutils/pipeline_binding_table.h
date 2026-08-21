@@ -40,7 +40,8 @@ namespace mtl
 		static constexpr u8 instancing_lookup_buffer = 6;
 		static constexpr u8 instancing_constants_buffer = 7;
 		static constexpr u8 sampler_state_buffer = 8;
-		static constexpr u8 buffer_count = 9;
+		static constexpr u8 line_mapping_buffer = 10;
+		static constexpr u8 buffer_count = 11;
 
 		static constexpr u8 textures_first = 0;
 		static constexpr u8 samplers_first = 0;

@@ -47,7 +47,7 @@ namespace mtl
 	{
 		queue_kind queue = queue_kind::graphics;
 		std::vector<event_operation> waits;
-		std::vector<event_operation> signals;
+		std::vector<event_operation> signal_operations;
 		bool wait_for_completion = false;
 	};
 

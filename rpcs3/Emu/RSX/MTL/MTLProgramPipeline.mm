@@ -26,19 +26,6 @@ namespace mtl
 			fmt::throw_exception("%s failed: %s", operation, description);
 		}
 
-		MTLPrimitiveTopologyClass native_topology(primitive_topology value)
-		{
-			switch (value)
-			{
-			case primitive_topology::point: return MTLPrimitiveTopologyClassPoint;
-			case primitive_topology::line:
-			case primitive_topology::line_strip: return MTLPrimitiveTopologyClassLine;
-			case primitive_topology::triangle:
-			case primitive_topology::triangle_strip: return MTLPrimitiveTopologyClassTriangle;
-			}
-			fmt::throw_exception("Invalid Metal primitive topology");
-		}
-
 		MTLBlendFactor native_blend_factor(blend_factor value)
 		{
 			switch (value)
@@ -421,7 +408,9 @@ namespace mtl
 		descriptor.label = native_string(configuration.label.empty() ? "RPCS3 graphics pipeline" : configuration.label);
 		descriptor.vertexFunctionDescriptor = vertex_function;
 		descriptor.fragmentFunctionDescriptor = fragment_function;
-		descriptor.inputPrimitiveTopology = native_topology(next->graphics_state.render.topology);
+		// Decompilers emit the point-size result for reuse across topology variants. Leaving the
+		// topology unspecified permits that legal superset while draw calls still select the exact primitive.
+		descriptor.inputPrimitiveTopology = MTLPrimitiveTopologyClassUnspecified;
 		descriptor.rasterSampleCount = next->graphics_state.render.multisample.sample_count;
 		descriptor.alphaToCoverageState = next->graphics_state.render.multisample.alpha_to_coverage ?
 			MTL4AlphaToCoverageStateEnabled : MTL4AlphaToCoverageStateDisabled;
@@ -527,7 +516,8 @@ namespace mtl
 		m_impl = std::move(next);
 	}
 
-	std::unique_ptr<MTLProgramPipeline> MTLProgramPipeline::create_binding_instance() const
+	std::unique_ptr<MTLProgramPipeline> MTLProgramPipeline::create_binding_instance(
+		bool inherit_bindings) const
 	{
 		if (!m_impl || !m_impl->is_linked || !m_impl->owner)
 			fmt::throw_exception("Cannot instantiate bindings from an empty Metal program pipeline");
@@ -551,6 +541,34 @@ namespace mtl
 		{
 			next->compute.create(*next->owner, m_impl->compute.table->layout(), argument_stage_compute,
 				"RPCS3 cached compute pipeline arguments");
+		}
+		if (inherit_bindings)
+		{
+			auto inherit = [](impl::stage_resources& destination,
+				const impl::stage_resources& source)
+			{
+				const std::array buffer_ranges{argument_binding_range{0, 0,
+					static_cast<u32>(source.buffers.size())}};
+				const std::array texture_ranges{argument_binding_range{0, 0,
+					static_cast<u32>(source.textures.size())}};
+				const std::array sampler_ranges{argument_binding_range{0, 0,
+					static_cast<u32>(source.samplers.size())}};
+				destination.table->copy_bindings_from(*source.table,
+					buffer_ranges, texture_ranges, sampler_ranges);
+				destination.buffers = source.buffers;
+				destination.textures = source.textures;
+				destination.samplers = source.samplers;
+				destination.dynamic_offsets = source.dynamic_offsets;
+			};
+			if (next->pipeline_kind == program_pipeline_kind::graphics)
+			{
+				inherit(next->vertex, m_impl->vertex);
+				inherit(next->fragment, m_impl->fragment);
+			}
+			else
+			{
+				inherit(next->compute, m_impl->compute);
+			}
 		}
 		next->is_linked = true;
 		result->m_impl = std::move(next);

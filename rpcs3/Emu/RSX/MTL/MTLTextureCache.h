@@ -157,7 +157,7 @@ namespace mtl
 		void initialize_subresource_from_memory(command_buffer& command, image* destination,
 			const deferred_subresource& description, rsx::texture_dimension_extended type) const;
 		void update_image_contents(command_buffer& command, image_view* destination,
-			image* source, u16 width, u16 height) override;
+			const deferred_subresource& description) override;
 
 		cached_texture_section* create_new_texture(command_buffer& command,
 			const utils::address_range32& range, u16 width, u16 height, u16 depth,
@@ -204,6 +204,9 @@ namespace mtl
 
 		[[nodiscard]] bool is_depth_texture(u32 address, u32 size) override;
 		void on_frame_end() override;
+		[[nodiscard]] std::unique_ptr<viewable_image> upload_image_simple_owned(
+			command_buffer& command, u64 format, u32 address, u32 width, u32 height,
+			u32 pitch, std::unique_ptr<buffer>& staging_lifetime);
 		[[nodiscard]] viewable_image* upload_image_simple(command_buffer& command,
 			u64 format, u32 address, u32 width, u32 height, u32 pitch);
 		[[nodiscard]] bool blit(const rsx::blit_src_info& source,

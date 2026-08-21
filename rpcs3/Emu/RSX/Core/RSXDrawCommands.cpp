@@ -717,7 +717,7 @@ namespace rsx
 		{
 			// We could technically fix this shader side, but...
 			// 1. We have full control over gl_FragCoord consumption, so fix it using our own pipeline as it is an emulated input.
-			// 2. Vulkan does not support pixel_center_integer decoration. SPIR-V modules only permit pixel center at half offset.
+			// 2. Vulkan and Metal expose fragment position at half-pixel centers, so both native pipelines need this bias.
 			payload.wpos_bias[0] -= 0.5f;
 			payload.wpos_bias[1] -= 0.5f;
 		}

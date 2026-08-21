@@ -199,10 +199,10 @@ namespace mtl
 			return (stages & ~stage_all_gpu) == 0 && (access & ~known_access) == 0 && !has_host_access(access);
 		}
 
-		std::pair<image_create_info, u32> null_image_info(texture_type type)
+		std::pair<image_create_info, u32> null_image_info(texture_type type, u64 pixel_format)
 		{
 			image_create_info info;
-			info.formats.base_format = MTLPixelFormatRGBA8Unorm;
+			info.formats.base_format = pixel_format;
 			info.type = type;
 			info.width = 4;
 			info.height = 4;
@@ -250,7 +250,8 @@ namespace mtl
 				info.array_layers = view_slices = 12;
 				break;
 			}
-			info.label = fmt::format("Metal null texture type %u", static_cast<u8>(type));
+			info.label = fmt::format("Metal null texture type %u format 0x%llx",
+				static_cast<u8>(type), pixel_format);
 			return {std::move(info), view_slices};
 		}
 	}
@@ -261,7 +262,7 @@ namespace mtl
 		memory_allocator* allocator = nullptr;
 		std::vector<std::unique_ptr<buffer_entry>> buffers;
 		std::vector<std::unique_ptr<image_entry>> images;
-		std::unordered_map<u8, null_image_entry> null_images;
+		std::unordered_map<u64, null_image_entry> null_images;
 		std::unique_ptr<sampler> fallback_sampler;
 		mutable std::mutex mutex;
 		u64 next_token = 1;
@@ -565,13 +566,20 @@ namespace mtl
 
 	image_view& scratch_resource_pool::null_image_view(command_buffer& command, texture_type type)
 	{
+		return null_image_view(command, type, MTLPixelFormatRGBA8Unorm);
+	}
+
+	image_view& scratch_resource_pool::null_image_view(command_buffer& command, texture_type type,
+		u64 pixel_format)
+	{
 		if (!command.is_recording()) fmt::throw_exception("Metal null texture creation requires active command recording");
 		std::lock_guard lock(m_impl->mutex);
 		if (!m_impl->allocator) fmt::throw_exception("Metal scratch-resource pool is not initialized");
-		auto& entry = m_impl->null_images[static_cast<u8>(type)];
+		const u64 key = pixel_format ^ (static_cast<u64>(static_cast<u8>(type)) << 56);
+		auto& entry = m_impl->null_images[key];
 		if (!entry.resource)
 		{
-			auto [info, slices] = null_image_info(type);
+			auto [info, slices] = null_image_info(type, pixel_format);
 			auto resource = std::make_unique<viewable_image>(*m_impl->allocator, info);
 			clear_image(command, *resource);
 			subresource_range range;

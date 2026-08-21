@@ -33,7 +33,10 @@ public:
 	bool vulkan_timed_out = false;
 	bool supports_vulkan = false;
 	QStringList vulkan_adapters;
+	bool supports_metal = false;
+	QStringList metal_adapters;
 	render_info Vulkan;
+	render_info Metal;
 	render_info OpenGL;
 	render_info NullRender;
 	std::vector<render_info*> renderers;

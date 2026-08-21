@@ -33,7 +33,8 @@ namespace mtl
 	{
 		bool uses_border(sampler_address_mode mode)
 		{
-			return mode == sampler_address_mode::border || mode == sampler_address_mode::mirror_once_border;
+			return mode == sampler_address_mode::border || mode == sampler_address_mode::clamp ||
+				mode == sampler_address_mode::mirror_once_border || mode == sampler_address_mode::mirror_once_clamp;
 		}
 
 		bool finite_color(const std::array<f32, 4>& color)
@@ -106,13 +107,14 @@ namespace mtl
 			{
 			case sampler_address_mode::wrap: return MTLSamplerAddressModeRepeat;
 			case sampler_address_mode::mirror: return MTLSamplerAddressModeMirrorRepeat;
-			case sampler_address_mode::clamp_to_edge:
-			case sampler_address_mode::clamp: return MTLSamplerAddressModeClampToEdge;
+			case sampler_address_mode::clamp_to_edge: return MTLSamplerAddressModeClampToEdge;
+			case sampler_address_mode::clamp: return MTLSamplerAddressModeClampToBorderColor;
 			case sampler_address_mode::border: return MTLSamplerAddressModeClampToBorderColor;
 			case sampler_address_mode::mirror_once_clamp_to_edge:
+				return MTLSamplerAddressModeMirrorClampToEdge;
 			case sampler_address_mode::mirror_once_border:
 			case sampler_address_mode::mirror_once_clamp:
-				return MTLSamplerAddressModeMirrorClampToEdge;
+				return MTLSamplerAddressModeClampToBorderColor;
 			}
 			fmt::throw_exception("Invalid Metal sampler address mode %u", static_cast<u8>(mode));
 		}
@@ -293,7 +295,12 @@ namespace mtl
 			(static_cast<u32>(m_impl->creation.address_t) << 4) |
 			(static_cast<u32>(m_impl->creation.address_r) << 8);
 		m_impl->shader_parameters.border_metadata = m_impl->creation.border.aspects |
-			(static_cast<u32>(m_impl->creation.border.integer) << 8);
+			(static_cast<u32>(m_impl->creation.border.integer) << 8) |
+			(static_cast<u32>(m_impl->creation.min_filter == sampler_filter::linear) << 16) |
+			(static_cast<u32>(m_impl->creation.mag_filter == sampler_filter::linear) << 17) |
+			(static_cast<u32>(m_impl->creation.mip_filter) << 18) |
+			((static_cast<u32>(static_cast<s32>(std::round(m_impl->creation.lod_bias * 64.f))) &
+				0x7ffu) << 20);
 
 		MTLSamplerDescriptor* native = [MTLSamplerDescriptor new];
 		native.label = [NSString stringWithUTF8String:std::string(label).c_str()];

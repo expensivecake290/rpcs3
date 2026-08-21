@@ -49,6 +49,11 @@ namespace mtl
 		{
 			return buffer && size != 0 && generation != 0;
 		}
+
+		[[nodiscard]] u64 buffer_gpu_address() const
+		{
+			return gpu_address >= offset ? gpu_address - offset : 0;
+		}
 	};
 
 	struct data_heap_window

@@ -737,6 +737,7 @@ namespace mtl
 		result = combine(result, info.sample_count);
 		result = combine(result, info.usage);
 		result = combine(result, info.aspects);
+		result = combine(result, static_cast<u8>(info.format_class));
 		result = combine(result, static_cast<u8>(info.storage));
 		result = combine(result, info.shareable);
 		for (const u64 format : info.formats.view_formats)
@@ -749,7 +750,7 @@ namespace mtl
 		switch (type)
 		{
 		case rsx::texture_dimension_extended::texture_dimension_1d:
-			return layers > 1 ? texture_type::texture_1d_array : texture_type::texture_1d;
+			return layers > 1 ? texture_type::texture_2d_array : texture_type::texture_2d;
 		case rsx::texture_dimension_extended::texture_dimension_2d:
 			return layers > 1 ? texture_type::texture_2d_array : texture_type::texture_2d;
 		case rsx::texture_dimension_extended::texture_dimension_cubemap:
@@ -952,7 +953,6 @@ namespace mtl
 		rsx::format_class format_class, u64 format, u16 width, u16 height, u16 depth,
 		u16 layers, u8 mipmaps, texture_type type, u32 image_flags, u32 usage_flags)
 	{
-		(void)format_class;
 		image_create_info info{
 			.type = type,
 			.formats = get_view_compatibility(format),
@@ -965,6 +965,7 @@ namespace mtl
 			.usage = texture_usage_copy_source | texture_usage_copy_destination |
 				texture_usage_shader_read | texture_usage_pixel_format_view | usage_flags,
 			.aspects = get_aspect_flags(format),
+			.format_class = format_class,
 			.storage = storage_mode::private_,
 			.hazards = hazard_tracking::tracked,
 			.pool = allocation_pool::texture_cache,
@@ -1051,10 +1052,12 @@ namespace mtl
 	image_view* texture_cache::create_temporary_subresource_view(command_buffer& command,
 		const deferred_subresource& description)
 	{
-		ensure(description.external_handle);
-		return create_temporary_subresource_view_impl(command, description.external_handle,
-			description.external_handle->type(), texture_type::texture_2d, description.gcm_format,
-			description.x, description.y, description.width, description.height, 1, 1,
+		ensure(description.sections_to_copy.size() == 1);
+		const auto& section = description.sections_to_copy.front();
+		ensure(section.src);
+		return create_temporary_subresource_view_impl(command, section.src,
+			section.src->type(), texture_type::texture_2d, description.gcm_format,
+			section.src_x, section.src_y, description.width, description.height, 1, 1,
 			description.remap, true);
 	}
 
@@ -1165,18 +1168,10 @@ namespace mtl
 	}
 
 	void texture_cache::update_image_contents(command_buffer& command,
-		image_view* destination, image* source, u16 width, u16 height)
+		image_view* destination, const deferred_subresource& description)
 	{
-		ensure(destination && destination->image() && source);
-		rsx::simple_array<copy_region_descriptor> region = {{
-			.src = source,
-			.xform = rsx::surface_transform::identity,
-			.src_w = width,
-			.src_h = height,
-			.dst_w = width,
-			.dst_h = height,
-		}};
-		copy_transfer_regions_impl(command, destination->image(), region);
+		ensure(destination && destination->image() && !description.sections_to_copy.empty());
+		copy_transfer_regions_impl(command, destination->image(), description.sections_to_copy);
 	}
 
 	cached_texture_section* texture_cache::create_new_texture(command_buffer& command,
@@ -1193,7 +1188,7 @@ namespace mtl
 		case rsx::texture_dimension_extended::texture_dimension_1d:
 			height = 1;
 			depth = 1;
-			native_type = texture_type::texture_1d;
+			native_type = texture_type::texture_2d;
 			break;
 		case rsx::texture_dimension_extended::texture_dimension_2d:
 			depth = 1;
@@ -1240,6 +1235,7 @@ namespace mtl
 			.sample_count = 1,
 			.usage = usage,
 			.aspects = native_format.aspects,
+			.format_class = rsx::classify_format(format),
 			.storage = storage_mode::private_,
 			.hazards = hazard_tracking::tracked,
 			.pool = allocation_pool::texture_cache,
@@ -1408,7 +1404,6 @@ namespace mtl
 		});
 		ensure(completed && completed.succeeded());
 		command.reset_after_completion();
-		command.begin();
 	}
 
 	void texture_cache::initialize(render_device& device, memory_allocator& allocator,
@@ -1494,17 +1489,22 @@ namespace mtl
 		reset_frame_statistics();
 	}
 
-	viewable_image* texture_cache::upload_image_simple(command_buffer& command,
-		u64 format, u32 address, u32 width, u32 height, u32 pitch)
+	std::unique_ptr<viewable_image> texture_cache::upload_image_simple_owned(
+		command_buffer& command, u64 format, u32 address, u32 width, u32 height,
+		u32 pitch, std::unique_ptr<buffer>& staging_lifetime)
 	{
+		if (staging_lifetime)
+			fmt::throw_exception("Metal simple texture upload received occupied staging storage");
 		const auto description = describe_native_format(format);
-		if (!description || description.bytes_per_block != 4 || description.block_width != 1 ||
-			description.block_height != 1 || pitch < width * 4)
+		if (!description || (description.bytes_per_block != 4 && description.bytes_per_block != 8) ||
+			description.block_width != 1 || description.block_height != 1 ||
+			pitch < width * description.bytes_per_block)
 		{
 			return nullptr;
 		}
-		const u64 data_size = static_cast<u64>(width) * height * 4;
-		auto staging = std::make_unique<buffer>(*m_allocator, buffer_create_info{
+		const u64 row_bytes = static_cast<u64>(width) * description.bytes_per_block;
+		const u64 data_size = row_bytes * height;
+		staging_lifetime = std::make_unique<buffer>(*m_allocator, buffer_create_info{
 			.size = data_size,
 			.usage = buffer_usage_copy_source,
 			.storage = storage_mode::shared,
@@ -1513,16 +1513,29 @@ namespace mtl
 			.pool = allocation_pool::swapchain,
 			.label = "RPCS3 simple texture upload",
 		});
-		auto* destination = static_cast<u32*>(staging->map(0, data_size));
+		auto* destination = static_cast<u8*>(staging_lifetime->map(0, data_size));
 		const u8* source = vm::_ptr<const u8>(address);
 		for (u32 row = 0; row < height; ++row)
 		{
-			const auto* input = reinterpret_cast<const be_t<u32>*>(source + static_cast<u64>(row) * pitch);
-			for (u32 column = 0; column < width; ++column)
-				destination[static_cast<u64>(row) * width + column] = input[column];
+			const u8* input = source + static_cast<u64>(row) * pitch;
+			u8* output = destination + static_cast<u64>(row) * row_bytes;
+			if (description.bytes_per_block == 4)
+			{
+				const auto* input_words = reinterpret_cast<const be_t<u32>*>(input);
+				auto* output_words = reinterpret_cast<u32*>(output);
+				for (u32 column = 0; column < width; ++column)
+					output_words[column] = input_words[column];
+			}
+			else
+			{
+				const auto* input_words = reinterpret_cast<const be_t<u16>*>(input);
+				auto* output_words = reinterpret_cast<u16*>(output);
+				for (u32 component = 0; component < width * 4; ++component)
+					output_words[component] = input_words[component];
+			}
 		}
-		staging->did_modify(0, data_size);
-		staging->unmap();
+		staging_lifetime->did_modify(0, data_size);
+		staging_lifetime->unmap();
 
 		image_create_info info{
 			.type = texture_type::texture_2d,
@@ -1536,6 +1549,7 @@ namespace mtl
 			.usage = texture_usage_shader_read | texture_usage_copy_destination |
 				texture_usage_copy_source | texture_usage_pixel_format_view,
 			.aspects = texture_aspect_color,
+			.format_class = rsx::RSX_FORMAT_CLASS_COLOR,
 			.storage = storage_mode::private_,
 			.pool = allocation_pool::swapchain,
 			.label = "RPCS3 simple uploaded texture",
@@ -1543,16 +1557,26 @@ namespace mtl
 		auto uploaded = std::make_unique<viewable_image>(*m_allocator, info);
 		const buffer_image_copy_region region{
 			.buffer_offset = 0,
-			.bytes_per_row = static_cast<u64>(width) * 4,
+			.bytes_per_row = row_bytes,
 			.bytes_per_image = data_size,
 			.subresource = {.aspects = texture_aspect_color},
 			.extent = {width, height, 1},
 		};
-		upload_image(command, *staging, *uploaded, std::span{&region, 1});
+		upload_image(command, *staging_lifetime, *uploaded, std::span{&region, 1});
+		return uploaded;
+	}
+
+	viewable_image* texture_cache::upload_image_simple(command_buffer& command,
+		u64 format, u32 address, u32 width, u32 height, u32 pitch)
+	{
+		std::unique_ptr<buffer> staging;
+		auto uploaded = upload_image_simple_owned(command, format, address, width, height,
+			pitch, staging);
+		if (!uploaded) return nullptr;
 		auto* result = uploaded.get();
 		get_resource_manager().retire(staging, {
 			.resource_class = managed_resource_class::buffer,
-			.bytes = data_size,
+			.bytes = staging ? staging->size() : 0,
 			.label = "RPCS3 simple texture staging",
 		});
 		get_resource_manager().retire(uploaded, {

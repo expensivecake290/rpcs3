@@ -235,6 +235,7 @@ namespace mtl
 			}
 			catch (...)
 			{
+				// Destruction cannot surface a cleanup failure to the caller.
 			}
 		}
 	}
@@ -242,9 +243,20 @@ namespace mtl
 	native_encoder_handle render_pass::begin(command_buffer& command,
 		std::shared_ptr<framebuffer> target, const render_pass_configuration& configuration)
 	{
-		if (is_open() || !command.is_recording() || command.active_encoder() != encoder_kind::none || !target)
+		if (is_open() || !command.is_recording() || !target)
 		{
-			fmt::throw_exception("Invalid Metal render pass begin");
+			fmt::throw_exception(
+				"Invalid Metal render pass begin (open=%d, recording=%d, encoder=%u, target=%d)",
+				is_open(), command.is_recording(), static_cast<u32>(command.active_encoder()),
+				static_cast<bool>(target));
+		}
+		if (command.active_encoder() == encoder_kind::compute)
+		{
+			command.end_encoding();
+		}
+		if (command.active_encoder() != encoder_kind::none)
+		{
+			fmt::throw_exception("Metal render pass begin conflicts with an active render encoder");
 		}
 		validate_render_pass_configuration(*target, configuration);
 		MTL4RenderPassDescriptor* descriptor = make_native_descriptor(command, *target, configuration);
@@ -318,13 +330,16 @@ namespace mtl
 
 	void render_pass::end()
 	{
-		if (!is_open() || !m_impl->active_command->is_recording() ||
-			m_impl->active_command->active_encoder() != encoder_kind::render ||
-			m_impl->active_command->active_native_encoder() != m_impl->encoder)
+		if (!m_impl || !m_impl->active_command || !m_impl->active_target || !m_impl->encoder)
 		{
-			fmt::throw_exception("Cannot end an inactive or externally changed Metal render pass");
+			fmt::throw_exception("Cannot end a closed Metal render pass");
 		}
-		m_impl->active_command->end_encoding();
+		if (m_impl->active_command->is_recording() &&
+			m_impl->active_command->active_encoder() == encoder_kind::render &&
+			m_impl->active_command->active_native_encoder() == m_impl->encoder)
+		{
+			m_impl->active_command->end_encoding();
+		}
 		m_impl->active_command = nullptr;
 		m_impl->active_target.reset();
 		m_impl->encoder = nullptr;
@@ -378,7 +393,10 @@ namespace mtl
 
 	bool render_pass::is_open() const
 	{
-		return m_impl && m_impl->active_command && m_impl->active_target && m_impl->encoder;
+		return m_impl && m_impl->active_command && m_impl->active_target && m_impl->encoder &&
+			m_impl->active_command->is_recording() &&
+			m_impl->active_command->active_encoder() == encoder_kind::render &&
+			m_impl->active_command->active_native_encoder() == m_impl->encoder;
 	}
 
 	native_encoder_handle render_pass::native_encoder() const

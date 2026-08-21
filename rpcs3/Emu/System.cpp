@@ -490,9 +490,13 @@ void Emulator::Init()
 
 	// Not all renderers are known at compile time, so set a provided default if possible
 	ensure(m_supported_renderers.contains(m_default_renderer));
-	ensure(!(m_default_renderer == video_renderer::vulkan && m_default_graphics_adapter.empty()));
+	ensure(!((m_default_renderer == video_renderer::vulkan ||
+		m_default_renderer == video_renderer::metal) && m_default_graphics_adapter.empty()));
 	g_cfg.video.renderer.set(m_default_renderer);
-	g_cfg.video.vk.adapter.set(m_default_graphics_adapter);
+	if (m_default_renderer == video_renderer::metal)
+		g_cfg.video.mtl.adapter.set(m_default_graphics_adapter);
+	else
+		g_cfg.video.vk.adapter.set(m_default_graphics_adapter);
 
 	g_cfg_defaults = g_cfg.to_string();
 
@@ -4246,7 +4250,9 @@ std::string Emulator::GetFormattedTitle(double fps) const
 	title_data.title = GetLocalizedTitle();
 	title_data.title_id = GetTitleID();
 	title_data.renderer = g_cfg.video.renderer.to_string();
-	title_data.vulkan_adapter = g_cfg.video.vk.adapter.to_string();
+	title_data.graphics_adapter = g_cfg.video.renderer == video_renderer::metal
+		? g_cfg.video.mtl.adapter.to_string()
+		: g_cfg.video.vk.adapter.to_string();
 	title_data.fps = fps;
 
 	return rpcs3::get_formatted_title(title_data);

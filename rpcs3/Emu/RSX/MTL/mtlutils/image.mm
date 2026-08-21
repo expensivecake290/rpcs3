@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "image.h"
+#include "image_helpers.h"
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -179,7 +180,10 @@ namespace mtl
 			}
 			if (info.formats.is_mutable() && !(info.usage & texture_usage_pixel_format_view))
 			{
-				fmt::throw_exception("Mutable Metal images require pixel-format-view usage");
+				fmt::throw_exception(
+					"Mutable Metal image '%s' requires pixel-format-view usage (format=%llu, views=%u, usage=0x%x)",
+					info.label, info.formats.base_format,
+					static_cast<u32>(info.formats.view_formats.size()), info.usage);
 			}
 		}
 
@@ -464,8 +468,26 @@ namespace mtl
 	u32 image::depth() const { return info().depth; }
 	u32 image::mipmaps() const { return info().mip_levels; }
 	u32 image::layers() const { return info().array_layers; }
-	u32 image::samples() const { return info().sample_count; }
+	u8 image::samples() const { return static_cast<u8>(info().sample_count); }
 	u64 image::format() const { return info().formats.base_format; }
+	rsx::format_class image::format_class() const
+	{
+		if (!m_impl) return rsx::RSX_FORMAT_CLASS_UNDEFINED;
+		if (info().format_class != rsx::RSX_FORMAT_CLASS_UNDEFINED)
+			return info().format_class;
+		if (info().aspects & texture_aspect_color) return rsx::RSX_FORMAT_CLASS_COLOR;
+		switch (info().formats.base_format)
+		{
+		case MTLPixelFormatDepth16Unorm:
+			return rsx::RSX_FORMAT_CLASS_DEPTH16_UNORM;
+		case MTLPixelFormatDepth32Float:
+			return rsx::RSX_FORMAT_CLASS_DEPTH16_FLOAT;
+		case MTLPixelFormatDepth32Float_Stencil8:
+			return rsx::RSX_FORMAT_CLASS_DEPTH24_UNORM_X8_PACK32;
+		default:
+			return rsx::RSX_FORMAT_CLASS_UNDEFINED;
+		}
+	}
 	texture_type image::type() const { return info().type; }
 	u8 image::aspects() const { return info().aspects; }
 	storage_mode image::storage() const { return info().storage; }
@@ -638,6 +660,22 @@ namespace mtl
 		image_view* result = view.get();
 		m_views.emplace(key, std::move(view));
 		return result;
+	}
+
+	image_view* viewable_image::get_view(const rsx::texture_channel_remap_t& remap)
+	{
+		const component_mapping mapping = apply_swizzle_remap(
+			{component_swizzle::red, component_swizzle::green,
+				component_swizzle::blue, component_swizzle::alpha}, remap);
+		subresource_range range;
+		range.first_mip = 0;
+		range.mip_count = mipmaps();
+		range.first_slice = 0;
+		range.slice_count = type() == texture_type::texture_3d ? 1 : layers();
+		range.color = bool(aspects() & texture_aspect_color);
+		range.depth = bool(aspects() & texture_aspect_depth);
+		range.stencil = bool(aspects() & texture_aspect_stencil);
+		return get_view(format(), type(), mapping, range);
 	}
 
 	void viewable_image::create(memory_allocator& allocator, const image_create_info& info)

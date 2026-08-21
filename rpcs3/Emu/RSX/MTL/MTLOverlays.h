@@ -88,6 +88,7 @@ namespace mtl
 		void set_stencil_write(bool enabled);
 		void upload_vertex_bytes(std::span<const std::byte> bytes, u32 stride);
 		void upload_constant_bytes(std::span<const std::byte> bytes);
+		void record_texture_upload(u64 bytes);
 		void draw(command_buffer& command, const areau& viewport,
 			const overlay_render_target& target, std::span<image_view* const> sources,
 			u32 vertex_count, u32 first_vertex = 0, u32 instance_count = 1,
@@ -167,6 +168,14 @@ namespace mtl
 			const areau& rectangle, u32 stencil_value, u32 stencil_write_mask);
 	};
 
+	class depth_clear_pass final : public overlay_pass
+	{
+	public:
+		depth_clear_pass();
+		void run(command_buffer& command, render_target& target,
+			const areau& rectangle, f32 depth_value);
+	};
+
 	class video_out_calibration_pass final : public overlay_pass
 	{
 		struct alignas(16) calibration_config
@@ -178,6 +187,7 @@ namespace mtl
 			color4_base<f32> left_anaglyph_matrix[3]{};
 			color4_base<f32> right_anaglyph_matrix[3]{};
 		};
+		static_assert(sizeof(calibration_config) == 112);
 
 		calibration_config m_config;
 
@@ -209,6 +219,7 @@ namespace mtl
 		[[nodiscard]] ui_overlay_renderer& ui();
 		[[nodiscard]] attachment_clear_pass& color_clear();
 		[[nodiscard]] stencil_clear_pass& stencil_clear();
+		[[nodiscard]] depth_clear_pass& depth_clear();
 		[[nodiscard]] video_out_calibration_pass& video_calibration();
 		[[nodiscard]] explicit operator bool() const;
 	};

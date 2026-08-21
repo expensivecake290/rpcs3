@@ -7,6 +7,7 @@
 #include "barriers.h"
 #include "memory.h"
 #include "unique_resource.h"
+#include "Emu/RSX/Common/TextureUtils.h"
 
 namespace mtl
 {
@@ -76,6 +77,7 @@ namespace mtl
 		u32 sample_count = 1;
 		u32 usage = texture_usage_shader_read;
 		u8 aspects = texture_aspect_color;
+		rsx::format_class format_class = rsx::RSX_FORMAT_CLASS_UNDEFINED;
 		storage_mode storage = storage_mode::private_;
 		hazard_tracking hazards = hazard_tracking::tracked;
 		allocation_pool pool = allocation_pool::texture_cache;
@@ -123,8 +125,9 @@ namespace mtl
 		[[nodiscard]] u32 depth() const;
 		[[nodiscard]] u32 mipmaps() const;
 		[[nodiscard]] u32 layers() const;
-		[[nodiscard]] u32 samples() const;
+		[[nodiscard]] u8 samples() const;
 		[[nodiscard]] u64 format() const;
+		[[nodiscard]] rsx::format_class format_class() const;
 		[[nodiscard]] texture_type type() const;
 		[[nodiscard]] u8 aspects() const;
 		[[nodiscard]] storage_mode storage() const;
@@ -183,6 +186,7 @@ namespace mtl
 			texture_type type,
 			component_mapping mapping,
 			subresource_range range);
+		[[nodiscard]] image_view* get_view(const rsx::texture_channel_remap_t& remap);
 		void clear_views();
 	};
 }

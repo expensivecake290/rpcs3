@@ -60,6 +60,9 @@
 #if defined(HAVE_VULKAN)
 #include "Emu/RSX/VK/VKGSRender.h"
 #endif
+#if defined(HAVE_METAL)
+#include "Emu/RSX/MTL/MTLGSRender.h"
+#endif
 
 #ifdef _WIN32
 #include <Usbiodef.h>
@@ -244,11 +247,15 @@ int gui_application::exec()
 		}
 
 #ifdef __APPLE__
-		if (!m_render_creator->Vulkan.supported)
+		const bool has_vulkan = m_render_creator->Vulkan.supported &&
+			!m_render_creator->Vulkan.adapters.empty();
+		const bool has_metal = m_render_creator->Metal.supported &&
+			!m_render_creator->Metal.adapters.empty();
+		if (!has_vulkan && !has_metal && !m_render_creator->OpenGL.supported)
 		{
 			QMessageBox::warning(nullptr,
 									tr("Warning"),
-									tr("Vulkan is not supported on this Mac.\n"
+									tr("No supported graphics renderer is available on this Mac.\n"
 									"No graphics will be rendered."));
 		}
 #endif
@@ -711,6 +718,7 @@ std::unique_ptr<gs_frame> gui_application::get_gs_frame()
 	}
 	case video_renderer::null:
 	case video_renderer::vulkan:
+	case video_renderer::metal:
 	{
 		frame = new gs_frame(screen, frame_geometry, app_icon, m_gui_settings, m_start_games_fullscreen);
 		break;
@@ -798,6 +806,13 @@ void gui_application::InitializeCallbacks()
 		{
 #if defined(HAVE_VULKAN)
 			g_fxo->init<rsx::thread, named_thread<VKGSRender>>(ar);
+#endif
+			break;
+		}
+		case video_renderer::metal:
+		{
+#if defined(HAVE_METAL)
+			g_fxo->init<rsx::thread, named_thread<MTLGSRender>>(ar);
 #endif
 			break;
 		}

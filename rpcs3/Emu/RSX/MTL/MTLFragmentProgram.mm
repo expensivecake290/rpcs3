@@ -28,7 +28,7 @@ namespace mtl
 
 		msl_texture_dimension texture_dimension(std::string_view declared_type)
 		{
-			if (declared_type == "sampler1D") return msl_texture_dimension::texture_1d;
+		if (declared_type == "sampler1D") return msl_texture_dimension::texture_2d;
 			if (declared_type == "sampler2D") return msl_texture_dimension::texture_2d;
 			if (declared_type == "sampler3D") return msl_texture_dimension::texture_3d;
 			if (declared_type == "samplerCube") return msl_texture_dimension::texture_cube;
@@ -69,7 +69,7 @@ namespace mtl
 				attribute("buffer", bindings.texture_parameters_buffer.index)));
 			arguments.push_back(fmt::format("device const uint4* rasterizer_environment%s",
 				attribute("buffer", bindings.rasterizer_environment_buffer.index)));
-			arguments.push_back(fmt::format("constant uint* sampler_state%s",
+			arguments.push_back(fmt::format("constant sampler_state_t* sampler_state%s",
 				attribute("buffer", bindings.sampler_state_buffer.index)));
 
 			for (u32 unit = 0; unit < fragment_texture_unit_count; unit++)
@@ -100,6 +100,11 @@ namespace mtl
 				arguments.push_back(fmt::format("%s fragment_depth_input%s", type,
 					attribute("texture", bindings.depth_input_texture.index)));
 			}
+			if (attributes && program.uses_framebuffer_fetch())
+			{
+				for (u32 index = 0; index < program.rsx_program().mrt_buffers_count && index < 4; ++index)
+					arguments.push_back(fmt::format("float4 framebuffer_color%u [[color(%u)]]", index, index));
+			}
 		}
 
 		std::string resource_signature(const MTLFragmentProgram& program, const ParamArray& parameters,
@@ -111,6 +116,7 @@ namespace mtl
 			arguments.push_back(attributes ? "bool front_facing [[front_facing]]" : "bool front_facing");
 			arguments.push_back(attributes ? "float2 point_coord [[point_coord]]" : "float2 point_coord");
 			arguments.push_back(attributes ? "uint sample_id [[sample_id]]" : "uint sample_id");
+			if (attributes) arguments.emplace_back("float3 barycentric [[barycentric_coord]]");
 			if (include_registers)
 			{
 				arguments.emplace_back("thread rsx_fragment_registers& registers");
@@ -118,7 +124,8 @@ namespace mtl
 			return join_msl_arguments(arguments);
 		}
 
-		std::string resource_call(const MTLFragmentProgram& program, bool include_registers)
+		std::string resource_call(const MTLFragmentProgram& program, bool include_registers,
+			std::string_view front_facing_name = "front_facing")
 		{
 			std::vector<std::string> arguments = {"fragment_contexts"};
 			const auto& bindings = program.bindings();
@@ -136,7 +143,7 @@ namespace mtl
 			}
 			if (bindings.uses_depth_input) arguments.emplace_back("fragment_depth_input");
 			arguments.emplace_back("input");
-			arguments.emplace_back("front_facing");
+			arguments.emplace_back(front_facing_name);
 			arguments.emplace_back("point_coord");
 			arguments.emplace_back("sample_id");
 			if (include_registers) arguments.emplace_back("registers");
@@ -372,6 +379,15 @@ struct sampler_info
 	uint flags;
 };
 
+struct sampler_state_t
+{
+	float4 border_color;
+	float lod_bias;
+	uint emulation_flags;
+	uint address_modes;
+	uint border_metadata;
+};
+
 struct fragment_context_t
 {
 	float fog_param0;
@@ -381,7 +397,43 @@ struct fragment_context_t
 	uint fog_mode;
 	float wpos_scale;
 	float2 wpos_bias;
+	uint logic_operation;
+	uint rop_emulation;
+	uint logic_types[4];
+	uint2 logic_padding;
+	uint4 logic_scales[4];
+	float4 blend_constants;
+	uint blend_equations;
+	uint blend_factors_alpha;
+	uint blend_factors_rgb;
+	uint programmable_blend_mask;
+	uint sample_mask;
+	uint3 sample_padding;
+	uint polygon_modes;
+	float polygon_line_width;
+	float polygon_point_size;
+	uint polygon_padding;
 };
+
+inline bool rsx_polygon_fragment_covered(float3 barycentric, bool front_facing,
+	constant fragment_context_t& context)
+{
+	if (!(context.polygon_modes & (1u << 31u))) return true;
+	const uint mode = front_facing ? (context.polygon_modes & 3u) :
+		((context.polygon_modes >> 2u) & 3u);
+	if (mode == 0u) return true;
+	const float3 derivatives = max(fwidth(barycentric), float3(0.000001f));
+	if (mode == 1u)
+	{
+		return min(barycentric.x / derivatives.x,
+			min(barycentric.y / derivatives.y, barycentric.z / derivatives.z)) <=
+			max(context.polygon_line_width * 0.5f, 0.5f);
+	}
+	const float3 normalized = barycentric / derivatives;
+	const float vertex_distance = min(max(normalized.y, normalized.z),
+		min(max(normalized.x, normalized.z), max(normalized.x, normalized.y)));
+	return vertex_distance <= max(context.polygon_point_size * 0.5f, 0.5f);
+}
 
 )MSL";
 	}
@@ -420,6 +472,7 @@ struct fragment_context_t
 			output << "\tfloat4 color" << index << " [[color(" << index << ")]];\n";
 			m_destination.m_metadata.output_color_masks[index] = umax;
 		}
+		output << "\tuint sample_mask [[sample_mask]];\n";
 		if ((m_prog.ctrl & CELL_GCM_SHADER_CONTROL_DEPTH_EXPORT) ||
 			(m_prog.ctrl & RSX_SHADER_CONTROL_EMULATE_DEPTH_COMPARE) ||
 			(m_prog.ctrl & RSX_SHADER_CONTROL_DISABLE_EARLY_Z))
@@ -431,6 +484,7 @@ struct fragment_context_t
 
 	void MTLFragmentDecompilerThread::insertConstants(std::stringstream&)
 	{
+		// Constants are supplied through the argument table emitted by insertInputs.
 	}
 
 	void MTLFragmentDecompilerThread::insertGlobalFunctions(std::stringstream& output)
@@ -468,6 +522,293 @@ inline float3 rsx_xform(float3 coordinate, sampler_info parameters)
 		float3(parameters.bias_x, parameters.bias_y, parameters.bias_z));
 }
 
+inline uint rsx_sampler_address_mode(constant sampler_state_t& state, uint axis)
+{
+	return (state.address_modes >> (axis * 4u)) & 0xfu;
+}
+
+inline float rsx_sampler_coordinate(float coordinate, constant sampler_state_t& state,
+	uint size, uint axis)
+{
+	if (state.emulation_flags & (1u << 5u)) coordinate /= float(max(size, 1u));
+	const uint mode = rsx_sampler_address_mode(state, axis);
+	if (mode == 6u || mode == 7u) coordinate = abs(coordinate);
+	if (mode == 4u || mode == 7u)
+	{
+		const float half_texel = 0.5f / float(max(size, 1u));
+		coordinate = clamp(coordinate, -half_texel, 1.0f + half_texel);
+	}
+	return coordinate;
+}
+
+inline float2 rsx_sampler_coordinate(float2 coordinate, constant sampler_state_t& state,
+	uint2 size)
+{
+	return float2(rsx_sampler_coordinate(coordinate.x, state, size.x, 0u),
+		rsx_sampler_coordinate(coordinate.y, state, size.y, 1u));
+}
+
+inline float3 rsx_sampler_coordinate(float3 coordinate, constant sampler_state_t& state,
+	uint3 size)
+{
+	return float3(rsx_sampler_coordinate(coordinate.x, state, size.x, 0u),
+		rsx_sampler_coordinate(coordinate.y, state, size.y, 1u),
+		rsx_sampler_coordinate(coordinate.z, state, size.z, 2u));
+}
+
+inline float rsx_border_coverage(float coordinate, uint size, bool linear_filter)
+{
+	const float texel = coordinate * float(max(size, 1u)) - 0.5f;
+	if (!linear_filter)
+		return (texel >= -0.5f && texel < float(size) - 0.5f) ? 1.0f : 0.0f;
+	const float lower = floor(texel);
+	const float fraction = texel - lower;
+	float result = (lower >= 0.0f && lower < float(size)) ? 1.0f - fraction : 0.0f;
+	result += (lower + 1.0f >= 0.0f && lower + 1.0f < float(size)) ? fraction : 0.0f;
+	return result;
+}
+
+inline float rsx_sampler_effective_bias(constant sampler_state_t& state)
+{
+	if (state.emulation_flags & (1u << 4u)) return state.lod_bias;
+	int encoded = int((state.border_metadata >> 20u) & 0x7ffu);
+	if (encoded & 0x400) encoded -= 0x800;
+	return float(encoded) / 64.0f;
+}
+
+inline bool rsx_sampler_linear_filter(constant sampler_state_t& state, float lod)
+{
+	return !!(state.border_metadata & (1u << (lod <= 0.0f ? 17u : 16u)));
+}
+
+inline float rsx_sampler_lod(float coordinate, uint size)
+{
+	return log2(max(max(abs(dfdx(coordinate)), abs(dfdy(coordinate))) * float(size), 0.000001f));
+}
+
+inline float rsx_sampler_lod(float2 coordinate, uint2 size)
+{
+	const float2 dimensions = float2(size);
+	return log2(max(max(length(dfdx(coordinate) * dimensions),
+		length(dfdy(coordinate) * dimensions)), 0.000001f));
+}
+
+inline float rsx_sampler_lod(float3 coordinate, uint3 size)
+{
+	const float3 dimensions = float3(size);
+	return log2(max(max(length(dfdx(coordinate) * dimensions),
+		length(dfdy(coordinate) * dimensions)), 0.000001f));
+}
+
+inline float rsx_gradient_lod(float dx, float dy, uint size)
+{
+	return log2(max(max(abs(dx), abs(dy)) * float(size), 0.000001f));
+}
+
+inline float rsx_gradient_lod(float2 dx, float2 dy, uint2 size)
+{
+	const float2 dimensions = float2(size);
+	return log2(max(max(length(dx * dimensions), length(dy * dimensions)), 0.000001f));
+}
+
+inline float rsx_gradient_lod(float3 dx, float3 dy, uint3 size)
+{
+	const float3 dimensions = float3(size);
+	return log2(max(max(length(dx * dimensions), length(dy * dimensions)), 0.000001f));
+}
+
+inline float4 rsx_custom_border(float4 sampled, float coordinate,
+	constant sampler_state_t& state, uint size, float lod)
+{
+	if (!(state.emulation_flags & 1u)) return sampled;
+	const bool linear_filter = rsx_sampler_linear_filter(state, lod);
+	const float coverage = rsx_border_coverage(coordinate, size, linear_filter);
+	return sampled + state.border_color * (1.0f - coverage);
+}
+
+inline float4 rsx_custom_border(float4 sampled, float2 coordinate,
+	constant sampler_state_t& state, uint2 size, float lod)
+{
+	if (!(state.emulation_flags & 1u)) return sampled;
+	const bool linear_filter = rsx_sampler_linear_filter(state, lod);
+	const float coverage = rsx_border_coverage(coordinate.x, size.x, linear_filter) *
+		rsx_border_coverage(coordinate.y, size.y, linear_filter);
+	return sampled + state.border_color * (1.0f - coverage);
+}
+
+inline float4 rsx_custom_border(float4 sampled, float3 coordinate,
+	constant sampler_state_t& state, uint3 size, float lod)
+{
+	if (!(state.emulation_flags & 1u)) return sampled;
+	const bool linear_filter = rsx_sampler_linear_filter(state, lod);
+	const float coverage = rsx_border_coverage(coordinate.x, size.x, linear_filter) *
+		rsx_border_coverage(coordinate.y, size.y, linear_filter) *
+		rsx_border_coverage(coordinate.z, size.z, linear_filter);
+	return sampled + state.border_color * (1.0f - coverage);
+}
+
+inline float4 rsx_sample(texture2d<float> texture_value, sampler sampler_value, float coordinate,
+	constant sampler_state_t& state)
+{
+	const uint size = texture_value.get_width();
+	const float transformed = rsx_sampler_coordinate(coordinate, state, size, 0u);
+	return rsx_custom_border(texture_value.sample(sampler_value, float2(transformed, 0.5f),
+		bias(state.lod_bias)), transformed, state, size,
+		rsx_sampler_lod(transformed, size) + rsx_sampler_effective_bias(state));
+}
+inline float4 rsx_sample(texture2d<float> texture_value, sampler sampler_value, float2 coordinate,
+	constant sampler_state_t& state)
+{
+	const uint2 size(texture_value.get_width(), texture_value.get_height());
+	const float2 transformed = rsx_sampler_coordinate(coordinate, state, size);
+	return rsx_custom_border(texture_value.sample(sampler_value, transformed, bias(state.lod_bias)),
+		transformed, state, size, rsx_sampler_lod(transformed, size) + rsx_sampler_effective_bias(state));
+}
+inline float4 rsx_sample(texture3d<float> texture_value, sampler sampler_value, float3 coordinate,
+	constant sampler_state_t& state)
+{
+	const uint3 size(texture_value.get_width(), texture_value.get_height(), texture_value.get_depth());
+	const float3 transformed = rsx_sampler_coordinate(coordinate, state, size);
+	return rsx_custom_border(texture_value.sample(sampler_value, transformed, bias(state.lod_bias)),
+		transformed, state, size, rsx_sampler_lod(transformed, size) + rsx_sampler_effective_bias(state));
+}
+inline float4 rsx_sample(texturecube<float> texture_value, sampler sampler_value, float3 coordinate,
+	constant sampler_state_t& state)
+{
+	return texture_value.sample(sampler_value, coordinate, bias(state.lod_bias));
+}
+
+inline float4 rsx_sample_bias(texture2d<float> texture_value, sampler sampler_value, float coordinate,
+	float value, constant sampler_state_t& state)
+{
+	const uint size = texture_value.get_width();
+	const float transformed = rsx_sampler_coordinate(coordinate, state, size, 0u);
+	return rsx_custom_border(texture_value.sample(sampler_value, float2(transformed, 0.5f),
+		bias(value + state.lod_bias)), transformed, state, size,
+		rsx_sampler_lod(transformed, size) + value + rsx_sampler_effective_bias(state));
+}
+inline float4 rsx_sample_bias(texture2d<float> texture_value, sampler sampler_value, float2 coordinate,
+	float value, constant sampler_state_t& state)
+{
+	const uint2 size(texture_value.get_width(), texture_value.get_height());
+	const float2 transformed = rsx_sampler_coordinate(coordinate, state, size);
+	return rsx_custom_border(texture_value.sample(sampler_value, transformed, bias(value + state.lod_bias)),
+		transformed, state, size, rsx_sampler_lod(transformed, size) + value + rsx_sampler_effective_bias(state));
+}
+inline float4 rsx_sample_bias(texture3d<float> texture_value, sampler sampler_value, float3 coordinate,
+	float value, constant sampler_state_t& state)
+{
+	const uint3 size(texture_value.get_width(), texture_value.get_height(), texture_value.get_depth());
+	const float3 transformed = rsx_sampler_coordinate(coordinate, state, size);
+	return rsx_custom_border(texture_value.sample(sampler_value, transformed, bias(value + state.lod_bias)),
+		transformed, state, size, rsx_sampler_lod(transformed, size) + value + rsx_sampler_effective_bias(state));
+}
+inline float4 rsx_sample_bias(texturecube<float> texture_value, sampler sampler_value, float3 coordinate,
+	float value, constant sampler_state_t& state)
+{
+	return texture_value.sample(sampler_value, coordinate, bias(value + state.lod_bias));
+}
+
+inline float4 rsx_sample_level(texture2d<float> texture_value, sampler sampler_value, float coordinate,
+	float value, constant sampler_state_t& state)
+{
+	const uint level_index = min(uint(max(value, 0.0f)), texture_value.get_num_mip_levels() - 1u);
+	const uint size = max(texture_value.get_width() >> level_index, 1u);
+	const float transformed = rsx_sampler_coordinate(coordinate, state, size, 0u);
+	return rsx_custom_border(texture_value.sample(sampler_value, float2(transformed, 0.5f), level(value)),
+		transformed, state, size, value);
+}
+inline float4 rsx_sample_level(texture2d<float> texture_value, sampler sampler_value, float2 coordinate,
+	float value, constant sampler_state_t& state)
+{
+	const uint level_index = min(uint(max(value, 0.0f)), texture_value.get_num_mip_levels() - 1u);
+	const uint2 size(max(texture_value.get_width() >> level_index, 1u),
+		max(texture_value.get_height() >> level_index, 1u));
+	const float2 transformed = rsx_sampler_coordinate(coordinate, state, size);
+	return rsx_custom_border(texture_value.sample(sampler_value, transformed, level(value)), transformed, state, size, value);
+}
+inline float4 rsx_sample_level(texture3d<float> texture_value, sampler sampler_value, float3 coordinate,
+	float value, constant sampler_state_t& state)
+{
+	const uint level_index = min(uint(max(value, 0.0f)), texture_value.get_num_mip_levels() - 1u);
+	const uint3 size(max(texture_value.get_width() >> level_index, 1u),
+		max(texture_value.get_height() >> level_index, 1u),
+		max(texture_value.get_depth() >> level_index, 1u));
+	const float3 transformed = rsx_sampler_coordinate(coordinate, state, size);
+	return rsx_custom_border(texture_value.sample(sampler_value, transformed, level(value)), transformed, state, size, value);
+}
+inline float4 rsx_sample_level(texturecube<float> texture_value, sampler sampler_value, float3 coordinate,
+	float value, constant sampler_state_t&)
+{
+	return texture_value.sample(sampler_value, coordinate, level(value));
+}
+
+inline float4 rsx_sample_gradient(texture2d<float> texture_value, sampler sampler_value, float coordinate,
+	float dx, float dy, constant sampler_state_t& state)
+{
+	const uint size = texture_value.get_width();
+	const float transformed = rsx_sampler_coordinate(coordinate, state, size, 0u);
+	const float lod_scale = exp2(state.lod_bias);
+	return rsx_custom_border(texture_value.sample(sampler_value, float2(transformed, 0.5f),
+		gradient2d(float2(dx * lod_scale, 0.0f), float2(dy * lod_scale, 0.0f))),
+		transformed, state, size, rsx_gradient_lod(dx, dy, size) + rsx_sampler_effective_bias(state));
+}
+inline float4 rsx_sample_gradient(texture2d<float> texture_value, sampler sampler_value, float2 coordinate,
+	float2 dx, float2 dy, constant sampler_state_t& state)
+{
+	const uint2 size(texture_value.get_width(), texture_value.get_height());
+	const float2 transformed = rsx_sampler_coordinate(coordinate, state, size);
+	const float lod_scale = exp2(state.lod_bias);
+	return rsx_custom_border(texture_value.sample(sampler_value, transformed,
+		gradient2d(dx * lod_scale, dy * lod_scale)), transformed, state, size,
+		rsx_gradient_lod(dx, dy, size) + rsx_sampler_effective_bias(state));
+}
+inline float4 rsx_sample_gradient(texture3d<float> texture_value, sampler sampler_value, float3 coordinate,
+	float3 dx, float3 dy, constant sampler_state_t& state)
+{
+	const uint3 size(texture_value.get_width(), texture_value.get_height(), texture_value.get_depth());
+	const float3 transformed = rsx_sampler_coordinate(coordinate, state, size);
+	const float lod_scale = exp2(state.lod_bias);
+	return rsx_custom_border(texture_value.sample(sampler_value, transformed,
+		gradient3d(dx * lod_scale, dy * lod_scale)), transformed, state, size,
+		rsx_gradient_lod(dx, dy, size) + rsx_sampler_effective_bias(state));
+}
+inline float4 rsx_sample_gradient(texturecube<float> texture_value, sampler sampler_value, float3 coordinate,
+	float3 dx, float3 dy, constant sampler_state_t& state)
+{
+	const float lod_scale = exp2(state.lod_bias);
+	return texture_value.sample(sampler_value, coordinate,
+		gradientcube(dx * lod_scale, dy * lod_scale));
+}
+
+inline uint4 rsx_sample_stencil(texture2d<uint> texture_value, sampler sampler_value, float coordinate,
+	constant sampler_state_t& state)
+{
+	const uint size = texture_value.get_width();
+	(void)sampler_value;
+	if (state.emulation_flags & (1u << 5u)) coordinate /= float(max(size, 1u));
+	if (coordinate < 0.0f || coordinate >= 1.0f) return uint4(0u);
+	return texture_value.read(uint2(min(uint(coordinate * float(size)), size - 1u), 0u));
+}
+inline uint4 rsx_sample_stencil(texture2d<uint> texture_value, sampler sampler_value, float2 coordinate,
+	constant sampler_state_t& state)
+{
+	const uint2 size(texture_value.get_width(), texture_value.get_height());
+	(void)sampler_value;
+	if (state.emulation_flags & (1u << 5u)) coordinate /= float2(max(size, uint2(1u)));
+	if (any(coordinate < 0.0f || coordinate >= 1.0f)) return uint4(0u);
+	return texture_value.read(min(uint2(coordinate * float2(size)), size - 1u));
+}
+inline uint4 rsx_sample_stencil(texture3d<uint> texture_value, sampler sampler_value, float3 coordinate,
+	constant sampler_state_t& state)
+{
+	const uint3 size(texture_value.get_width(), texture_value.get_height(), texture_value.get_depth());
+	(void)sampler_value;
+	if (state.emulation_flags & (1u << 5u)) coordinate /= float3(max(size, uint3(1u)));
+	if (any(coordinate < 0.0f || coordinate >= 1.0f)) return uint4(0u);
+	return texture_value.read(min(uint3(coordinate * float3(size)), size - 1u));
+}
+
 inline float4 rsx_process_texel(float4 value, uint flags, bool expand_active)
 {
 	if ((flags & (1u << 4u)) && value.w < 0.000001f) discard_fragment();
@@ -494,6 +835,147 @@ inline float4 rsx_process_texel(float4 value, uint flags, bool expand_active)
 			flags & (1u << 8u), flags & (1u << 9u), flags & (1u << 6u)));
 	}
 	return value;
+}
+
+inline uint4 rsx_logic_bits(uint4 source, uint4 destination, uint operation)
+{
+	switch (operation)
+	{
+	case 0u: return uint4(0u);
+	case 1u: return source & destination;
+	case 2u: return source & ~destination;
+	case 3u: return source;
+	case 4u: return ~source & destination;
+	case 5u: return destination;
+	case 6u: return source ^ destination;
+	case 7u: return source | destination;
+	case 8u: return ~(source | destination);
+	case 9u: return ~(source ^ destination);
+	case 10u: return ~destination;
+	case 11u: return source | ~destination;
+	case 12u: return ~source;
+	case 13u: return ~source | destination;
+	case 14u: return ~(source & destination);
+	default: return uint4(~0u);
+	}
+}
+
+inline float4 rsx_logic_apply(float4 source, float4 destination, uint operation,
+	uint type, uint4 scale)
+{
+	if (type == 1u)
+	{
+		const ushort4 bits = ushort4(rsx_logic_bits(uint4(as_type<ushort4>(half4(source))),
+			uint4(as_type<ushort4>(half4(destination))), operation));
+		return float4(as_type<half4>(bits));
+	}
+	if (type == 2u)
+		return as_type<float4>(rsx_logic_bits(as_type<uint4>(source),
+			as_type<uint4>(destination), operation));
+	const float4 maximum = float4(max(scale, uint4(1u)));
+	const uint4 source_bits = uint4(round(clamp(source, 0.0f, 1.0f) * maximum));
+	const uint4 destination_bits = uint4(round(clamp(destination, 0.0f, 1.0f) * maximum));
+	return float4(rsx_logic_bits(source_bits, destination_bits, operation) & scale) / maximum;
+}
+
+inline float rsx_blend_factor_alpha(uint factor, float4 source, float4 destination,
+	float4 constants)
+{
+	switch (factor)
+	{
+	case 0u: return 0.0f;
+	case 1u: return 1.0f;
+	case 0x300u:
+	case 0x302u: return source.w;
+	case 0x301u:
+	case 0x303u: return 1.0f - source.w;
+	case 0x304u:
+	case 0x306u: return destination.w;
+	case 0x305u:
+	case 0x307u: return 1.0f - destination.w;
+	case 0x308u: return 1.0f;
+	case 0x8001u:
+	case 0x8003u: return constants.w;
+	case 0x8002u:
+	case 0x8004u: return 1.0f - constants.w;
+	default: return 0.0f;
+	}
+}
+
+inline float3 rsx_blend_factor_rgb(uint factor, float4 source, float4 destination,
+	float4 constants)
+{
+	switch (factor)
+	{
+	case 0u: return float3(0.0f);
+	case 1u: return float3(1.0f);
+	case 0x300u: return source.xyz;
+	case 0x301u: return 1.0f - source.xyz;
+	case 0x302u: return float3(source.w);
+	case 0x303u: return float3(1.0f - source.w);
+	case 0x304u: return float3(destination.w);
+	case 0x305u: return float3(1.0f - destination.w);
+	case 0x306u: return destination.xyz;
+	case 0x307u: return 1.0f - destination.xyz;
+	case 0x308u: return float3(min(source.w, 1.0f - destination.w));
+	case 0x8001u: return constants.xyz;
+	case 0x8002u: return 1.0f - constants.xyz;
+	case 0x8003u: return float3(constants.w);
+	case 0x8004u: return float3(1.0f - constants.w);
+	default: return float3(0.0f);
+	}
+}
+
+inline float rsx_blend_equation_alpha(float source, float destination, uint equation)
+{
+	switch (equation)
+	{
+	case 0x8006u: return saturate(source) + destination;
+	case 0x8007u: return min(saturate(source), destination);
+	case 0x8008u: return max(saturate(source), destination);
+	case 0x800au: return saturate(source) - destination;
+	case 0x800bu: return destination - saturate(source);
+	case 0xf005u: return destination - source;
+	case 0xf006u:
+	case 0xf007u: return source + destination;
+	default: return 0.0f;
+	}
+}
+
+inline float3 rsx_blend_equation_rgb(float3 source, float3 destination, uint equation)
+{
+	switch (equation)
+	{
+	case 0x8006u: return saturate(source) + destination;
+	case 0x8007u: return min(saturate(source), destination);
+	case 0x8008u: return max(saturate(source), destination);
+	case 0x800au: return saturate(source) - destination;
+	case 0x800bu: return destination - saturate(source);
+	case 0xf005u: return destination - source;
+	case 0xf006u:
+	case 0xf007u: return source + destination;
+	default: return float3(0.0f);
+	}
+}
+
+inline float4 rsx_programmable_blend(float4 source, float4 destination,
+	constant fragment_context_t& context)
+{
+	const uint source_rgb = context.blend_factors_rgb & 0xffffu;
+	const uint destination_rgb = context.blend_factors_rgb >> 16u;
+	const uint source_alpha = context.blend_factors_alpha & 0xffffu;
+	const uint destination_alpha = context.blend_factors_alpha >> 16u;
+	float4 result;
+	result.xyz = rsx_blend_equation_rgb(
+		source.xyz * rsx_blend_factor_rgb(source_rgb, source, destination, context.blend_constants),
+		destination.xyz * rsx_blend_factor_rgb(destination_rgb, source, destination, context.blend_constants),
+		context.blend_equations & 0xffffu);
+	result.w = rsx_blend_equation_alpha(
+		source.w * rsx_blend_factor_alpha(source_alpha, source, destination, context.blend_constants),
+		destination.w * rsx_blend_factor_alpha(destination_alpha, source, destination, context.blend_constants),
+		context.blend_equations >> 16u);
+	const float4 truncated = as_type<float4>(as_type<uint4>(result) & uint4(0xfffff000u));
+	return float4(max(floor(fma(truncated, 255.0f, 0.5f)), 0.0f)) / 255.0f;
 }
 
 inline float4 rsx_decode_depth(float depth, uint stencil, sampler_info parameters)
@@ -531,33 +1013,34 @@ inline float4 rsx_sample_ms(texture2d_ms<float, access::read> texture_value, flo
 #define RSX_SAMPLER(index) RSX_SAMPLER_NAME_(index)
 #define TEX_PARAM(index) texture_parameters[input.draw_params_payload.z + index]
 #define TEX_FLAGS(index) TEX_PARAM(index).flags
-#define TEX1D(index, coordinate) rsx_process_texel(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index))), TEX_FLAGS(index), rsx_texture_expand_active)
-#define TEX1D_BIAS(index, coordinate, value) rsx_process_texel(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), bias(value)), TEX_FLAGS(index), rsx_texture_expand_active)
-#define TEX1D_LOD(index, coordinate, value) rsx_process_texel(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), level(value)), TEX_FLAGS(index), rsx_texture_expand_active)
-#define TEX1D_GRAD(index, coordinate, dx, dy) rsx_process_texel(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), gradient1d(dx, dy)), TEX_FLAGS(index), rsx_texture_expand_active)
+#define SAMPLER_STATE(index) sampler_state[index]
+#define TEX1D(index, coordinate) rsx_process_texel(rsx_sample(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), SAMPLER_STATE(index)), TEX_FLAGS(index), rsx_texture_expand_active)
+#define TEX1D_BIAS(index, coordinate, value) rsx_process_texel(rsx_sample_bias(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), value, SAMPLER_STATE(index)), TEX_FLAGS(index), rsx_texture_expand_active)
+#define TEX1D_LOD(index, coordinate, value) rsx_process_texel(rsx_sample_level(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), value, SAMPLER_STATE(index)), TEX_FLAGS(index), rsx_texture_expand_active)
+#define TEX1D_GRAD(index, coordinate, dx, dy) rsx_process_texel(rsx_sample_gradient(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), (dx) * TEX_PARAM(index).scale_x, (dy) * TEX_PARAM(index).scale_x, SAMPLER_STATE(index)), TEX_FLAGS(index), rsx_texture_expand_active)
 #define TEX1D_PROJ(index, coordinate) TEX1D(index, (coordinate).x / (coordinate).w)
-#define TEX2D(index, coordinate) rsx_process_texel(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index))), TEX_FLAGS(index), rsx_texture_expand_active)
-#define TEX2D_BIAS(index, coordinate, value) rsx_process_texel(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), bias(value)), TEX_FLAGS(index), rsx_texture_expand_active)
-#define TEX2D_LOD(index, coordinate, value) rsx_process_texel(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), level(value)), TEX_FLAGS(index), rsx_texture_expand_active)
-#define TEX2D_GRAD(index, coordinate, dx, dy) rsx_process_texel(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), gradient2d(dx, dy)), TEX_FLAGS(index), rsx_texture_expand_active)
+#define TEX2D(index, coordinate) rsx_process_texel(rsx_sample(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), SAMPLER_STATE(index)), TEX_FLAGS(index), rsx_texture_expand_active)
+#define TEX2D_BIAS(index, coordinate, value) rsx_process_texel(rsx_sample_bias(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), value, SAMPLER_STATE(index)), TEX_FLAGS(index), rsx_texture_expand_active)
+#define TEX2D_LOD(index, coordinate, value) rsx_process_texel(rsx_sample_level(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), value, SAMPLER_STATE(index)), TEX_FLAGS(index), rsx_texture_expand_active)
+#define TEX2D_GRAD(index, coordinate, dx, dy) rsx_process_texel(rsx_sample_gradient(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), (dx) * float2(TEX_PARAM(index).scale_x, TEX_PARAM(index).scale_y), (dy) * float2(TEX_PARAM(index).scale_x, TEX_PARAM(index).scale_y), SAMPLER_STATE(index)), TEX_FLAGS(index), rsx_texture_expand_active)
 #define TEX2D_PROJ(index, coordinate) TEX2D(index, (coordinate).xy / (coordinate).w)
-#define TEX3D(index, coordinate) rsx_process_texel(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index))), TEX_FLAGS(index), rsx_texture_expand_active)
-#define TEX3D_BIAS(index, coordinate, value) rsx_process_texel(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), bias(value)), TEX_FLAGS(index), rsx_texture_expand_active)
-#define TEX3D_LOD(index, coordinate, value) rsx_process_texel(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), level(value)), TEX_FLAGS(index), rsx_texture_expand_active)
-#define TEX3D_GRAD(index, coordinate, dx, dy) rsx_process_texel(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), gradient3d(dx, dy)), TEX_FLAGS(index), rsx_texture_expand_active)
+#define TEX3D(index, coordinate) rsx_process_texel(rsx_sample(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), SAMPLER_STATE(index)), TEX_FLAGS(index), rsx_texture_expand_active)
+#define TEX3D_BIAS(index, coordinate, value) rsx_process_texel(rsx_sample_bias(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), value, SAMPLER_STATE(index)), TEX_FLAGS(index), rsx_texture_expand_active)
+#define TEX3D_LOD(index, coordinate, value) rsx_process_texel(rsx_sample_level(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), value, SAMPLER_STATE(index)), TEX_FLAGS(index), rsx_texture_expand_active)
+#define TEX3D_GRAD(index, coordinate, dx, dy) rsx_process_texel(rsx_sample_gradient(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), (dx) * float3(TEX_PARAM(index).scale_x, TEX_PARAM(index).scale_y, TEX_PARAM(index).scale_z), (dy) * float3(TEX_PARAM(index).scale_x, TEX_PARAM(index).scale_y, TEX_PARAM(index).scale_z), SAMPLER_STATE(index)), TEX_FLAGS(index), rsx_texture_expand_active)
 #define TEX3D_PROJ(index, coordinate) TEX3D(index, (coordinate).xyz / (coordinate).w)
-#define TEX1D_SHADOW(index, coordinate) float4(float(rsx_shadow_compare(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform((coordinate).x, TEX_PARAM(index))).x, (coordinate).y, (TEX_FLAGS(index) >> 15u) & 7u)))
+#define TEX1D_SHADOW(index, coordinate) float4(float(rsx_shadow_compare(rsx_sample(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform((coordinate).x, TEX_PARAM(index)), SAMPLER_STATE(index)).x, (coordinate).y, (TEX_FLAGS(index) >> 15u) & 7u)))
 #define TEX1D_SHADOWPROJ(index, coordinate) TEX1D_SHADOW(index, float2((coordinate).x / (coordinate).w, (coordinate).y / (coordinate).w))
-#define TEX2D_SHADOW(index, coordinate) float4(float(rsx_shadow_compare(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform((coordinate).xy, TEX_PARAM(index))).x, (coordinate).z, (TEX_FLAGS(index) >> 15u) & 7u)))
+#define TEX2D_SHADOW(index, coordinate) float4(float(rsx_shadow_compare(rsx_sample(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform((coordinate).xy, TEX_PARAM(index)), SAMPLER_STATE(index)).x, (coordinate).z, (TEX_FLAGS(index) >> 15u) & 7u)))
 #define TEX2D_SHADOWPROJ(index, coordinate) TEX2D_SHADOW(index, (coordinate).xyz / (coordinate).w)
-#define TEX3D_SHADOW(index, coordinate) float4(float(rsx_shadow_compare(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform((coordinate).xyz, TEX_PARAM(index))).x, (coordinate).w, (TEX_FLAGS(index) >> 15u) & 7u)))
+#define TEX3D_SHADOW(index, coordinate) float4(float(rsx_shadow_compare(rsx_sample(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform((coordinate).xyz, TEX_PARAM(index)), SAMPLER_STATE(index)).x, (coordinate).w, (TEX_FLAGS(index) >> 15u) & 7u)))
 #define TEX3D_SHADOWPROJ(index, coordinate) TEX3D_SHADOW(index, coordinate)
 #define TEX2D_MS(index, coordinate) rsx_process_texel(rsx_sample_ms(RSX_TEXTURE(index), coordinate, TEX_PARAM(index)), TEX_FLAGS(index), rsx_texture_expand_active)
 #define TEX2D_SHADOW_MS(index, coordinate) float4(float(rsx_shadow_compare(rsx_sample_ms(RSX_TEXTURE(index), (coordinate).xy, TEX_PARAM(index)).x, (coordinate).z, (TEX_FLAGS(index) >> 15u) & 7u)))
 #define TEX2D_SHADOWPROJ_MS(index, coordinate) TEX2D_SHADOW_MS(index, (coordinate).xyz / (coordinate).w)
-#define TEX1D_Z24X8_RGBA8(index, coordinate) rsx_process_texel(rsx_decode_depth(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index))).x, RSX_STENCIL(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index))).x, TEX_PARAM(index)), TEX_FLAGS(index), rsx_texture_expand_active)
-#define TEX2D_Z24X8_RGBA8(index, coordinate) rsx_process_texel(rsx_decode_depth(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index))).x, RSX_STENCIL(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index))).x, TEX_PARAM(index)), TEX_FLAGS(index), rsx_texture_expand_active)
-#define TEX3D_Z24X8_RGBA8(index, coordinate) rsx_process_texel(rsx_decode_depth(RSX_TEXTURE(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index))).x, RSX_STENCIL(index).sample(RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index))).x, TEX_PARAM(index)), TEX_FLAGS(index), rsx_texture_expand_active)
+#define TEX1D_Z24X8_RGBA8(index, coordinate) rsx_process_texel(rsx_decode_depth(rsx_sample(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), SAMPLER_STATE(index)).x, rsx_sample_stencil(RSX_STENCIL(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), SAMPLER_STATE(index)).x, TEX_PARAM(index)), TEX_FLAGS(index), rsx_texture_expand_active)
+#define TEX2D_Z24X8_RGBA8(index, coordinate) rsx_process_texel(rsx_decode_depth(rsx_sample(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), SAMPLER_STATE(index)).x, rsx_sample_stencil(RSX_STENCIL(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), SAMPLER_STATE(index)).x, TEX_PARAM(index)), TEX_FLAGS(index), rsx_texture_expand_active)
+#define TEX3D_Z24X8_RGBA8(index, coordinate) rsx_process_texel(rsx_decode_depth(rsx_sample(RSX_TEXTURE(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), SAMPLER_STATE(index)).x, rsx_sample_stencil(RSX_STENCIL(index), RSX_SAMPLER(index), rsx_xform(coordinate, TEX_PARAM(index)), SAMPLER_STATE(index)).x, TEX_PARAM(index)), TEX_FLAGS(index), rsx_texture_expand_active)
 #define TEX1D_Z24X8_RGBA8_PROJ(index, coordinate) TEX1D_Z24X8_RGBA8(index, (coordinate).x / (coordinate).w)
 #define TEX2D_Z24X8_RGBA8_PROJ(index, coordinate) TEX2D_Z24X8_RGBA8(index, (coordinate).xy / (coordinate).w)
 #define TEX3D_Z24X8_RGBA8_PROJ(index, coordinate) TEX3D_Z24X8_RGBA8(index, (coordinate).xyz / (coordinate).w)
@@ -609,8 +1092,16 @@ inline float4 _builtin_lif(float4 value) { return float4(1.0f, value.y, value.y 
 		output << "\tconst float4 ssa = front_facing ? float4(1.0f) : float4(-1.0f);\n";
 		output << "\tconst float4 wpos = float4(fragment_position.xy, fragment_position.z, 1.0f / fragment_position.w);\n";
 		output << "\tconst float4 fogc = float4(input.fogc, 0.0f, 0.0f, 0.0f);\n";
-		output << "\tconst float4 diff_color = front_facing ? input.diff_color : input.diff_color1;\n";
-		output << "\tconst float4 spec_color = front_facing ? input.spec_color : input.spec_color1;\n";
+		if (m_prog.two_sided_lighting)
+		{
+			output << "\tconst float4 diff_color = front_facing ? input.diff_color : input.diff_color1;\n";
+			output << "\tconst float4 spec_color = front_facing ? input.spec_color : input.spec_color1;\n";
+		}
+		else
+		{
+			output << "\tconst float4 diff_color = input.diff_color;\n";
+			output << "\tconst float4 spec_color = input.spec_color;\n";
+		}
 		for (u32 index = 0; index < 10; index++) output << "\tconst float4 tc" << index << " = input.tc" << index << ";\n";
 		for (const ParamType& type : m_parr.params[PF_PARAM_NONE])
 		{
@@ -641,6 +1132,9 @@ inline float4 _builtin_lif(float4 value) { return float4(1.0f, value.y, value.y 
 		output << "fragment rsx_fragment_output rsx_fragment_main(" << resource_signature(m_destination, m_parr, true, false) << ")\n{\n";
 		output << "\trsx_fragment_output output;\n";
 		output << "\trsx_fragment_registers registers;\n";
+		output << "\tconstant fragment_context_t& context = fragment_contexts[input.draw_params_payload.y];\n";
+		output << "\tif (!rsx_polygon_fragment_covered(barycentric, front_facing, context)) discard_fragment();\n";
+		output << "\tconst bool guest_front_facing = (context.polygon_modes & (1u << 30u)) ? true : front_facing;\n";
 		const bool fp32 = !!(m_prog.ctrl & CELL_GCM_SHADER_CONTROL_32_BITS_EXPORTS);
 		const std::array<std::string_view, 4> names = fp32 ?
 			std::array<std::string_view, 4>{"r0", "r2", "r3", "r4"} :
@@ -648,8 +1142,8 @@ inline float4 _builtin_lif(float4 value) { return float4(1.0f, value.y, value.y 
 		for (const auto name : names) output << "\tregisters." << name << " = " <<
 			(fp32 || !device_props.has_native_half_support ? "float4(0.0f);\n" : "half4(0.0h);\n");
 		if (m_prog.ctrl & CELL_GCM_SHADER_CONTROL_DEPTH_EXPORT) output << "\tregisters.r1 = float4(0.0f);\n";
-		output << "\trsx_fragment_execute(" << resource_call(m_destination, true) << ");\n";
-		output << "\tconst fragment_context_t context = fragment_contexts[input.draw_params_payload.y];\n";
+		output << "\trsx_fragment_execute(" << resource_call(m_destination, true,
+			"guest_front_facing") << ");\n";
 
 		if (m_prog.ctrl & RSX_SHADER_CONTROL_POLYGON_STIPPLE)
 		{
@@ -685,8 +1179,19 @@ inline float4 _builtin_lif(float4 value) { return float4(1.0f, value.y, value.y 
 		}
 		for (u32 index = 0; index < m_prog.mrt_buffers_count && index < 4; index++)
 		{
+			if (m_options.framebuffer_fetch)
+			{
+				output << "\tif (context.rop_emulation & 1u) color" << index
+					<< " = rsx_logic_apply(color" << index << ", framebuffer_color" << index
+					<< ", context.logic_operation, context.logic_types[" << index
+					<< "], context.logic_scales[" << index << "]);\n";
+				output << "\tif ((context.rop_emulation & 2u) && (context.programmable_blend_mask & "
+					<< (1u << index) << "u)) color" << index << " = rsx_programmable_blend(color"
+					<< index << ", framebuffer_color" << index << ", context);\n";
+			}
 			output << "\toutput.color" << index << " = color" << index << ";\n";
 		}
+		output << "\toutput.sample_mask = context.sample_mask;\n";
 
 		const bool has_depth = (m_prog.ctrl & CELL_GCM_SHADER_CONTROL_DEPTH_EXPORT) ||
 			(m_prog.ctrl & RSX_SHADER_CONTROL_EMULATE_DEPTH_COMPARE) ||
@@ -826,4 +1331,5 @@ inline float4 _builtin_lif(float4 value) { return float4(1.0f, value.y, value.y 
 	std::span<const u32> MTLFragmentProgram::constant_offsets() const { return m_constant_offsets; }
 	library_handle MTLFragmentProgram::library() const { return m_impl->library; }
 	function_handle MTLFragmentProgram::function() const { return m_impl->function; }
+	bool MTLFragmentProgram::uses_framebuffer_fetch() const { return m_options.framebuffer_fetch; }
 }

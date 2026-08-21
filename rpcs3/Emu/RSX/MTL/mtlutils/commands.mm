@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "commands.h"
 
+#include "../MTLResourceManager.h"
 #include "shared.h"
 
 #import <Foundation/Foundation.h>
@@ -572,7 +573,7 @@ namespace mtl
 		{
 			validate_event_operation(operation, "wait");
 		}
-		for (const event_operation& operation : info.signals)
+		for (const event_operation& operation : info.signal_operations)
 		{
 			validate_event_operation(operation, "signal");
 		}
@@ -589,6 +590,12 @@ namespace mtl
 		auto completion_callbacks = std::make_shared<std::vector<std::function<void(bool)>>>(
 			std::move(m_impl->completion_callbacks));
 		state->submission_value = get_shared_state().next_submission();
+		const u64 resource_event = current_resource_event();
+		if (!resource_event)
+		{
+			fmt::throw_exception("Metal command submission has no resource-retirement event");
+		}
+		static_cast<void>(allocate_resource_event());
 		auto& allocator_impl = *m_impl->command_allocator_owner->m_impl;
 		{
 			std::lock_guard lock(allocator_impl.mutex);
@@ -622,11 +629,12 @@ namespace mtl
 			}
 			allocator_impl.condition.notify_all();
 			get_shared_state().notify_submission_completed(state->submission_value);
+			notify_resource_event_completed(resource_event);
 		}];
 
 		id<MTL4CommandBuffer> native_buffer = m_impl->buffer;
 		[queue commit:&native_buffer count:1 options:options];
-		for (const event_operation& operation : info.signals)
+		for (const event_operation& operation : info.signal_operations)
 		{
 			[queue signalEvent:operation.event value:operation.value];
 		}

@@ -670,6 +670,86 @@ if(TARGET 3rdparty_vulkan)
     endif()
 endif()
 
+if(APPLE AND USE_METAL)
+    target_sources(rpcs3_emu PRIVATE
+        RSX/MTL/MetalAPI.mm
+        RSX/MTL/MTLAsyncScheduler.mm
+        RSX/MTL/MTLCommandStream.mm
+        RSX/MTL/MTLCommonDecompiler.cpp
+        RSX/MTL/MTLCommonPipelineLayout.mm
+        RSX/MTL/MTLCompute.mm
+        RSX/MTL/MTLDataHeapManager.cpp
+        RSX/MTL/MTLDMA.mm
+        RSX/MTL/MTLDraw.mm
+        RSX/MTL/MTLFormats.mm
+        RSX/MTL/MTLFragmentProgram.mm
+        RSX/MTL/MTLFramebuffer.mm
+        RSX/MTL/MTLGSRender.mm
+        RSX/MTL/MTLHelpers.mm
+        RSX/MTL/MTLMemAlloc.mm
+        RSX/MTL/MTLOverlays.mm
+        RSX/MTL/MTLPipelineCompiler.mm
+        RSX/MTL/MTLPresent.mm
+        RSX/MTL/MTLProgramPipeline.mm
+        RSX/MTL/MTLQueryPool.mm
+        RSX/MTL/MTLRenderPass.mm
+        RSX/MTL/MTLRenderTargets.mm
+        RSX/MTL/MTLResolveHelper.mm
+        RSX/MTL/MTLResourceManager.mm
+        RSX/MTL/MTLShaderInterpreter.mm
+        RSX/MTL/MTLTexture.mm
+        RSX/MTL/MTLTextureCache.mm
+        RSX/MTL/MTLVertexBuffers.mm
+        RSX/MTL/MTLVertexProgram.mm
+        RSX/MTL/mtlutils/barriers.mm
+        RSX/MTL/mtlutils/buffer_object.mm
+        RSX/MTL/mtlutils/chip_class.cpp
+        RSX/MTL/mtlutils/commands.mm
+        RSX/MTL/mtlutils/data_heap.mm
+        RSX/MTL/mtlutils/descriptors.mm
+        RSX/MTL/mtlutils/device.mm
+        RSX/MTL/mtlutils/ex.mm
+        RSX/MTL/mtlutils/image.mm
+        RSX/MTL/mtlutils/image_helpers.mm
+        RSX/MTL/mtlutils/memory.mm
+        RSX/MTL/mtlutils/metal_layer.mm
+        RSX/MTL/mtlutils/sampler.mm
+        RSX/MTL/mtlutils/scratch.mm
+        RSX/MTL/mtlutils/shared.mm
+        RSX/MTL/mtlutils/swapchain.mm
+        RSX/MTL/mtlutils/sync.mm
+        RSX/MTL/mtlutils/unique_resource.mm
+        RSX/MTL/upscalers/metalfx_pass.mm
+    )
+
+    target_compile_definitions(rpcs3_emu PUBLIC HAVE_METAL)
+    set_source_files_properties(
+        RSX/MTL/MTLCommonDecompiler.cpp
+        RSX/MTL/MTLDataHeapManager.cpp
+        RSX/MTL/mtlutils/chip_class.cpp
+        PROPERTIES COMPILE_OPTIONS -fexceptions
+    )
+    target_compile_options(rpcs3_emu PRIVATE
+        $<$<COMPILE_LANGUAGE:OBJCXX>:-fexceptions>
+        $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>
+        $<$<COMPILE_LANGUAGE:OBJCXX>:-fblocks>
+        $<$<COMPILE_LANGUAGE:OBJCXX>:-Wno-unguarded-availability-new>
+    )
+
+    find_library(METAL_FRAMEWORK Metal REQUIRED)
+    find_library(METALFX_FRAMEWORK MetalFX REQUIRED)
+    find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
+    find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
+    find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    target_link_libraries(rpcs3_emu PRIVATE
+        ${METAL_FRAMEWORK}
+        ${METALFX_FRAMEWORK}
+        ${QUARTZCORE_FRAMEWORK}
+        ${APPKIT_FRAMEWORK}
+        ${FOUNDATION_FRAMEWORK}
+    )
+endif()
+
 if(NOT WIN32)
     set(THREADS_PREFER_PTHREAD_FLAG ON)
 endif()

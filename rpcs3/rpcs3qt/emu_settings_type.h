@@ -72,6 +72,7 @@ enum class emu_settings_type
 	GPUTextureScaling,
 	StretchToDisplayArea,
 	VulkanAdapter,
+	MetalAdapter,
 	ForceHighpZ,
 	StrictRenderingMode,
 	FramebufferAliasingBias,

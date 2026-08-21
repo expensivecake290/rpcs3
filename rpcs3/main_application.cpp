@@ -72,16 +72,24 @@ main_application::main_application()
 	{
 		supported_renderers.insert(video_renderer::opengl);
 	}
-
-	// Make Vulkan default setting if it is supported
 	if (m_render_creator->Vulkan.supported && !m_render_creator->Vulkan.adapters.empty())
+		supported_renderers.insert(video_renderer::vulkan);
+	if (m_render_creator->Metal.supported && !m_render_creator->Metal.adapters.empty())
+		supported_renderers.insert(video_renderer::metal);
+
+	if (m_render_creator->Metal.supported && !m_render_creator->Metal.adapters.empty())
+	{
+		const std::string adapter = ::at32(m_render_creator->Metal.adapters, 0).toStdString();
+		cfg_log.notice("Setting the default renderer to Metal. Default GPU: '%s'", adapter);
+		Emu.SetDefaultRenderer(video_renderer::metal);
+		Emu.SetDefaultGraphicsAdapter(adapter);
+	}
+	else if (m_render_creator->Vulkan.supported && !m_render_creator->Vulkan.adapters.empty())
 	{
 		const std::string adapter = ::at32(m_render_creator->Vulkan.adapters, 0).toStdString();
 		cfg_log.notice("Setting the default renderer to Vulkan. Default GPU: '%s'", adapter);
 		Emu.SetDefaultRenderer(video_renderer::vulkan);
 		Emu.SetDefaultGraphicsAdapter(adapter);
-
-		supported_renderers.insert(video_renderer::vulkan);
 	}
 	else if (m_render_creator->OpenGL.supported)
 	{

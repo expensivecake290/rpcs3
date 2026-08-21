@@ -5,6 +5,9 @@
 #if defined(HAVE_VULKAN)
 #include "Emu/RSX/VK/vkutils/instance.h"
 #endif
+#if defined(HAVE_METAL)
+#include "Emu/RSX/MTL/mtlutils/device.h"
+#endif
 
 #include <chrono>
 #include <condition_variable>
@@ -81,8 +84,18 @@ render_creator::render_creator()
 	}
 #endif
 
+#if defined(HAVE_METAL)
+	for (const mtl::physical_device& gpu : mtl::enumerate_devices())
+	{
+		if (gpu.supports_metal4())
+			metal_adapters.append(QString::fromStdString(gpu.name()));
+	}
+	supports_metal = !metal_adapters.isEmpty();
+#endif
+
 	// Graphics Adapter
 	Vulkan = render_info(vulkan_adapters, supports_vulkan, emu_settings_type::VulkanAdapter);
+	Metal = render_info(metal_adapters, supports_metal, emu_settings_type::MetalAdapter);
 	OpenGL = render_info();
 	NullRender = render_info();
 
@@ -90,7 +103,7 @@ render_creator::render_creator()
 	OpenGL.supported = false;
 #endif
 
-	renderers = { &Vulkan, &OpenGL, &NullRender };
+	renderers = { &Vulkan, &Metal, &OpenGL, &NullRender };
 }
 
 void render_creator::update_names(const QStringList& names)

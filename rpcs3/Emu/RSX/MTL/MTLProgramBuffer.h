@@ -1,6 +1,8 @@
 #pragma once
 
+#include "MTLHelpers.h"
 #include "MTLPipelineCompiler.h"
+#include "Emu/system_config.h"
 #include "Emu/RSX/Program/ProgramStateCache.h"
 
 namespace mtl
@@ -31,7 +33,14 @@ namespace mtl
 		{
 			destination.id = static_cast<u32>(id);
 			destination.program = std::make_shared<MTLFragmentProgram>();
-			destination.program->Decompile(source, destination.id);
+			const render_device* renderer = get_current_renderer();
+			destination.program->Decompile(source, destination.id, {
+				// The RSX ISA permits mixed half/full register expressions. MSL requires explicit
+				// conversions for those expressions, so use the lossless full-precision path.
+				.use_native_half = false,
+				.framebuffer_fetch = renderer && renderer->info().features.framebuffer_fetch,
+				.log_source = g_cfg.video.log_programs.get(),
+			});
 			destination.constant_offsets.assign(destination.program->constant_offsets().begin(),
 				destination.program->constant_offsets().end());
 		}
@@ -42,7 +51,10 @@ namespace mtl
 			destination.id = static_cast<u32>(id);
 			destination.program = std::make_shared<MTLVertexProgram>();
 			destination.program->id = destination.id;
-			destination.program->Decompile(source);
+			destination.program->Decompile(source, {
+				.emulate_conditional_rendering = emulate_conditional_rendering(),
+				.log_source = g_cfg.video.log_programs.get(),
+			});
 		}
 
 		static void validate_pipeline_properties(const vertex_program_type& vertex,

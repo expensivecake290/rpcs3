@@ -121,6 +121,9 @@ const std::map<emu_settings_type, cfg_location> settings_location =
 	{ emu_settings_type::ExclusiveFullscreenMode,          get_cfg_location(local_cfg.video.vk.exclusive_fullscreen_mode) },
 	{ emu_settings_type::UseReBAR,                         get_cfg_location(local_cfg.video.vk.use_rebar_upload_heap) },
 
+	// Metal
+	{ emu_settings_type::MetalAdapter,                     get_cfg_location(local_cfg.video.mtl.adapter) },
+
 	// Performance Overlay
 	{ emu_settings_type::PerfOverlayEnabled,               get_cfg_location(local_cfg.video.perf_overlay.enabled) },
 	{ emu_settings_type::PerfOverlayFramerateGraphEnabled, get_cfg_location(local_cfg.video.perf_overlay.framerate_graph_enabled) },

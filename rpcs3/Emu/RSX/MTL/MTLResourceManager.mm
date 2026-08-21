@@ -80,6 +80,7 @@ namespace mtl
 		}
 		catch (...)
 		{
+			// Destruction cannot surface a cleanup failure to the caller.
 		}
 	}
 
@@ -89,6 +90,11 @@ namespace mtl
 		{
 			fmt::throw_exception("Metal resource manager requires initialized shared state");
 		}
+		u64 initial_event = current_resource_event();
+		if (!initial_event)
+		{
+			initial_event = allocate_resource_event();
+		}
 		{
 			std::lock_guard lock(m_impl->mutex);
 			if (m_impl->initialized)
@@ -96,9 +102,9 @@ namespace mtl
 				fmt::throw_exception("Metal resource manager is already initialized");
 			}
 			m_impl->shared = &state;
-			m_impl->current = {current_resource_event(), state.current_frame()};
+			m_impl->current = {initial_event, state.current_frame()};
 			m_impl->stats = {};
-			m_impl->stats.current_submission = current_resource_event();
+			m_impl->stats.current_submission = initial_event;
 			m_impl->stats.completed_submission = last_completed_resource_event();
 			m_impl->pending_by_class.fill(0);
 			m_impl->next_marker_id = 1;

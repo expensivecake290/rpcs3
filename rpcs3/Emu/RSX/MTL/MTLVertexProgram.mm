@@ -48,7 +48,7 @@ namespace mtl
 			}
 			else if (declared_type == "sampler1D")
 			{
-				type.dimension = msl_texture_dimension::texture_1d;
+				type.dimension = msl_texture_dimension::texture_2d;
 			}
 			else if (declared_type == "sampler2D")
 			{
@@ -102,6 +102,13 @@ namespace mtl
 				attribute("buffer", bindings.draw_parameters_buffer.index)));
 			arguments.push_back(fmt::format("constant vertex_context_t* vertex_contexts%s",
 				attribute("buffer", bindings.context_buffer.index)));
+			arguments.push_back(fmt::format("device const line_mapping_t* line_mappings%s",
+				attribute("buffer", bindings.line_mapping_buffer.index)));
+			if (bindings.sampler_state_buffer)
+			{
+				arguments.push_back(fmt::format("constant sampler_state_t* sampler_state%s",
+					attribute("buffer", bindings.sampler_state_buffer.index)));
+			}
 
 			if (bindings.uses_conditional_rendering)
 			{
@@ -153,11 +160,15 @@ namespace mtl
 			return join_msl_arguments(arguments);
 		}
 
-		std::string resource_call(const MTLVertexProgram& program, bool include_registers)
+		std::string resource_call(const MTLVertexProgram& program, bool include_registers,
+			std::string_view vertex_id_name = "vertex_id",
+			std::string_view register_name = "registers")
 		{
 			std::vector<std::string> arguments = {
-				"persistent_input_stream", "volatile_input_stream", "draw_parameters", "vertex_contexts"};
+				"persistent_input_stream", "volatile_input_stream", "draw_parameters", "vertex_contexts",
+				"line_mappings"};
 			const auto& bindings = program.bindings();
+			if (bindings.sampler_state_buffer) arguments.emplace_back("sampler_state");
 			if (bindings.uses_conditional_rendering)
 			{
 				arguments.emplace_back("conditional_render_predicate");
@@ -183,11 +194,11 @@ namespace mtl
 					arguments.push_back("vtex" + std::to_string(unit) + "_sampler");
 				}
 			}
-			arguments.emplace_back("vertex_id");
+			arguments.emplace_back(vertex_id_name);
 			arguments.emplace_back("instance_id");
 			if (include_registers)
 			{
-				arguments.emplace_back("registers");
+				arguments.emplace_back(register_name);
 			}
 			return join_msl_arguments(arguments);
 		}
@@ -234,6 +245,7 @@ namespace mtl
 		validate_buffer(volatile_vertex_buffer, vertex_stage_binding_table::volatile_vertex_buffer, "volatile vertices");
 		validate_buffer(draw_parameters_buffer, vertex_stage_binding_table::draw_parameters_buffer, "draw parameters");
 		validate_buffer(context_buffer, vertex_stage_binding_table::context_buffer, "vertex context");
+		validate_buffer(line_mapping_buffer, vertex_stage_binding_table::line_mapping_buffer, "line mapping");
 		if (uses_conditional_rendering)
 		{
 			validate_buffer(conditional_render_predicate_buffer,
@@ -249,6 +261,11 @@ namespace mtl
 		else if (constants_buffer)
 		{
 			validate_buffer(constants_buffer, vertex_stage_binding_table::constants_buffer, "vertex constants");
+		}
+		if (texture_mask)
+		{
+			validate_buffer(sampler_state_buffer, vertex_stage_binding_table::sampler_state_buffer,
+				"sampler state");
 		}
 
 		for (u32 unit = 0; unit < vertex_texture_unit_count; unit++)
@@ -273,6 +290,8 @@ namespace mtl
 		result ^= static_cast<u64>(uses_conditional_rendering) << 9;
 		result ^= static_cast<u64>(uses_instanced_constants) << 10;
 		result ^= static_cast<u64>(!!constants_buffer) << 11;
+		result ^= static_cast<u64>(!!sampler_state_buffer) << 12;
+		result ^= static_cast<u64>(line_mapping_buffer.index) << 16;
 		return result;
 	}
 
@@ -304,10 +323,14 @@ namespace mtl
 		switch (function)
 		{
 		case FUNCTION::VERTEX_TEXTURE_FETCH1D:
-			return fmt::format("%s.sample(%s, $0.x, level(0.0f))", texture, sampler_name);
+			return fmt::format("rsx_vertex_sample(%s, %s, $0.x, sampler_state[%u])",
+				texture, sampler_name, unit);
 		case FUNCTION::VERTEX_TEXTURE_FETCH2D:
-			return fmt::format("%s.sample(%s, $0.xy, level(0.0f))", texture, sampler_name);
+			return fmt::format("rsx_vertex_sample(%s, %s, $0.xy, sampler_state[%u])",
+				texture, sampler_name, unit);
 		case FUNCTION::VERTEX_TEXTURE_FETCH3D:
+			return fmt::format("rsx_vertex_sample(%s, %s, $0.xyz, sampler_state[%u])",
+				texture, sampler_name, unit);
 		case FUNCTION::VERTEX_TEXTURE_FETCHCUBE:
 			return fmt::format("%s.sample(%s, $0.xyz, level(0.0f))", texture, sampler_name);
 		case FUNCTION::VERTEX_TEXTURE_FETCH2DMS:
@@ -364,6 +387,11 @@ namespace mtl
 				}
 			}
 		}
+		if (bindings.texture_mask)
+		{
+			bindings.sampler_state_buffer = vertex_stage_binding_table::buffer(
+				vertex_stage_binding_table::sampler_state_buffer);
+		}
 		bindings.validate();
 
 		m_inputs.clear();
@@ -375,6 +403,8 @@ namespace mtl
 		add_buffer("volatile_input_stream", bindings.volatile_vertex_buffer);
 		add_buffer("draw_parameters", bindings.draw_parameters_buffer);
 		add_buffer("vertex_contexts", bindings.context_buffer);
+		add_buffer("line_mappings", bindings.line_mapping_buffer);
+		if (bindings.sampler_state_buffer) add_buffer("sampler_state", bindings.sampler_state_buffer);
 		if (bindings.uses_conditional_rendering)
 		{
 			add_buffer("conditional_render_predicate", bindings.conditional_render_predicate_buffer);
@@ -423,7 +453,9 @@ struct vertex_context_t
 	float point_size;
 	float z_near;
 	float z_far;
-	float reserved[3];
+	float line_width;
+	float viewport_width;
+	float viewport_height;
 };
 
 struct draw_parameters_t
@@ -440,6 +472,72 @@ struct draw_parameters_t
 	uint reserved;
 	uint2 attrib_data[16];
 };
+
+struct line_mapping_t
+{
+	uint vertex_id;
+	uint other_vertex_id;
+	float side;
+	uint reserved;
+};
+
+struct sampler_state_t
+{
+	float4 border_color;
+	float lod_bias;
+	uint emulation_flags;
+	uint address_modes;
+	uint border_metadata;
+};
+
+inline float rsx_vertex_texture_coordinate(float coordinate, constant sampler_state_t& state,
+	uint size, uint axis)
+{
+	if (state.emulation_flags & (1u << 5u)) coordinate /= float(max(size, 1u));
+	const uint mode = (state.address_modes >> (axis * 4u)) & 0xfu;
+	if (mode == 6u || mode == 7u) coordinate = abs(coordinate);
+	if (mode == 4u || mode == 7u)
+	{
+		const float half_texel = 0.5f / float(max(size, 1u));
+		coordinate = clamp(coordinate, -half_texel, 1.0f + half_texel);
+	}
+	return coordinate;
+}
+
+inline float4 rsx_vertex_sample(texture2d<float> texture_value, sampler sampler_value,
+	float coordinate, constant sampler_state_t& state)
+{
+	const uint size = texture_value.get_width();
+	const float transformed = rsx_vertex_texture_coordinate(coordinate, state, size, 0u);
+	if ((state.emulation_flags & 1u) && (transformed < 0.0f || transformed > 1.0f))
+		return state.border_color;
+	return texture_value.sample(sampler_value, float2(transformed, 0.5f), level(0.0f));
+}
+
+inline float4 rsx_vertex_sample(texture2d<float> texture_value, sampler sampler_value,
+	float2 coordinate, constant sampler_state_t& state)
+{
+	const uint2 size(texture_value.get_width(), texture_value.get_height());
+	const float2 transformed(
+		rsx_vertex_texture_coordinate(coordinate.x, state, size.x, 0u),
+		rsx_vertex_texture_coordinate(coordinate.y, state, size.y, 1u));
+	if ((state.emulation_flags & 1u) && any(transformed < 0.0f || transformed > 1.0f))
+		return state.border_color;
+	return texture_value.sample(sampler_value, transformed, level(0.0f));
+}
+
+inline float4 rsx_vertex_sample(texture3d<float> texture_value, sampler sampler_value,
+	float3 coordinate, constant sampler_state_t& state)
+{
+	const uint3 size(texture_value.get_width(), texture_value.get_height(), texture_value.get_depth());
+	const float3 transformed(
+		rsx_vertex_texture_coordinate(coordinate.x, state, size.x, 0u),
+		rsx_vertex_texture_coordinate(coordinate.y, state, size.y, 1u),
+		rsx_vertex_texture_coordinate(coordinate.z, state, size.z, 2u));
+	if ((state.emulation_flags & 1u) && any(transformed < 0.0f || transformed > 1.0f))
+		return state.border_color;
+	return texture_value.sample(sampler_value, transformed, level(0.0f));
+}
 
 inline float4 rsx_apply_zclip(float4 position, float near_plane, float far_plane)
 {
@@ -524,11 +622,11 @@ inline float4 rsx_fetch_attribute(rsx_attribute_description description, int ver
 	device const uchar* stream)
 {
 	uint element_size = 1u;
-	if (description.type == 0u || description.type == 2u || description.type == 4u)
+	if (description.type == 1u || description.type == 3u || description.type == 5u)
 	{
 		element_size = 2u;
 	}
-	else if (description.type == 1u || description.type == 5u)
+	else if (description.type == 2u || description.type == 6u)
 	{
 		element_size = 4u;
 	}
@@ -543,33 +641,33 @@ inline float4 rsx_fetch_attribute(rsx_attribute_description description, int ver
 
 	float scale = 1.0f;
 	float4 result = float4(0.0f);
-	if (description.type == 0u || description.type == 4u)
+	if (description.type == 1u || description.type == 5u)
 	{
 		result = float4(rsx_sign_extend_16(bits.x), rsx_sign_extend_16(bits.y),
 			rsx_sign_extend_16(bits.z), rsx_sign_extend_16(bits.w));
-		if (description.type == 0u)
+		if (description.type == 1u)
 		{
 			result = fma(float4(0.5f), float4(1.0f), result);
 			scale = 32767.5f;
 		}
 	}
-	else if (description.type == 1u)
+	else if (description.type == 2u)
 	{
 		result = as_type<float4>(bits);
 	}
-	else if (description.type == 2u)
+	else if (description.type == 3u)
 	{
 		const uint low = bits.x | (bits.y << 16u);
 		const uint high = bits.z | (bits.w << 16u);
 		result.xy = float2(as_type<half2>(low));
 		result.zw = float2(as_type<half2>(high));
 	}
-	else if (description.type == 3u || description.type == 6u)
+	else if (description.type == 4u || description.type == 7u)
 	{
 		result = float4(bits);
-		scale = description.type == 3u ? 255.0f : 1.0f;
+		scale = description.type == 4u ? 255.0f : 1.0f;
 	}
-	else
+	else if (description.type == 6u)
 	{
 		const uint4 packed = uint4(rsx_extract_bits(bits.x, 0u, 11u),
 			rsx_extract_bits(bits.x, 11u, 11u), rsx_extract_bits(bits.x, 22u, 10u), 32767u);
@@ -605,6 +703,7 @@ inline float4 rsx_read_location(uint location, uint vertex_id, constant draw_par
 	void MTLVertexDecompilerThread::insertConstants(std::stringstream&,
 		const std::vector<ParamType>&)
 	{
+		// Constants are supplied through the argument table emitted by insertInputs.
 	}
 
 	void MTLVertexDecompilerThread::insertOutputs(std::stringstream& output,
@@ -723,22 +822,40 @@ inline float4 rsx_read_location(uint location, uint vertex_id, constant draw_par
 			output << "\tif (conditional_render_predicate[0] == 0u)\n\t{\n";
 			output << "\t\toutput.position = float4(0.0f, 0.0f, 0.0f, -1.0f);\n\t\treturn output;\n\t}\n";
 		}
-
+		output << "\tline_mapping_t line_mapping = {vertex_id, vertex_id, 0.0f, 0u};\n";
+		output << "\tif (draw.reserved & 1u) line_mapping = line_mappings[vertex_id];\n";
+		output << "\tconst uint source_vertex_id = line_mapping.vertex_id;\n";
 		output << "\trsx_vertex_registers registers;\n";
+		output << "\trsx_vertex_registers other_registers;\n";
 		for (const ParamType& type : m_parr.params[PF_PARAM_OUT])
 		{
 			for (const ParamItem& item : type.items)
 			{
 				output << "\tregisters." << item.name << " = " <<
 					(item.value.empty() ? type.type + "(0.0f)" : item.value) << ";\n";
+				output << "\tother_registers." << item.name << " = registers." << item.name << ";\n";
 			}
 		}
-		output << "\trsx_vertex_execute(" << resource_call(m_destination, true) << ");\n";
+		output << "\trsx_vertex_execute(" << resource_call(m_destination, true, "source_vertex_id") << ");\n";
+		output << "\tif (draw.reserved & 1u) rsx_vertex_execute(";
+		output << resource_call(m_destination, true, "line_mapping.other_vertex_id", "other_registers");
+		output << ");\n";
 
 		if (m_parr.HasParam(PF_PARAM_OUT, "float4", "dst_reg0"))
 		{
 			output << "\toutput.position = registers.dst_reg0 * vertex_context.scale_offset_mat;\n";
 			output << "\toutput.position = rsx_apply_zclip(output.position, vertex_context.z_near, vertex_context.z_far);\n";
+			output << "\tif (draw.reserved & 1u)\n\t{\n";
+			output << "\t\tfloat4 other_position = other_registers.dst_reg0 * vertex_context.scale_offset_mat;\n";
+			output << "\t\tother_position = rsx_apply_zclip(other_position, vertex_context.z_near, vertex_context.z_far);\n";
+			output << "\t\tconst float2 viewport_size = max(float2(vertex_context.viewport_width, vertex_context.viewport_height), 1.0f);\n";
+			output << "\t\tconst float first_w = abs(output.position.w) > 0.000001f ? output.position.w : copysign(0.000001f, output.position.w);\n";
+			output << "\t\tconst float other_w = abs(other_position.w) > 0.000001f ? other_position.w : copysign(0.000001f, other_position.w);\n";
+			output << "\t\tconst float2 delta = (other_position.xy / other_w - output.position.xy / first_w) * viewport_size;\n";
+			output << "\t\tconst float delta_length = length(delta);\n";
+			output << "\t\tconst float2 normal = delta_length > 0.000001f ? float2(-delta.y, delta.x) / delta_length : float2(0.0f, 1.0f);\n";
+			output << "\t\toutput.position.xy += normal * line_mapping.side * vertex_context.line_width * output.position.w / viewport_size;\n";
+			output << "\t}\n";
 		}
 		for (const auto& varying : varying_exports)
 		{

@@ -113,7 +113,9 @@ struct cfg_root : cfg::node
 	{
 		node_video(cfg::node* _this) : cfg::node(_this, "Video") {}
 
-#if defined(HAVE_VULKAN)
+#if defined(HAVE_METAL)
+		cfg::_enum<video_renderer> renderer{ this, "Renderer", video_renderer::metal };
+#elif defined(HAVE_VULKAN)
 		cfg::_enum<video_renderer> renderer{ this, "Renderer", video_renderer::vulkan };
 #else
 		cfg::_enum<video_renderer> renderer{ this, "Renderer", video_renderer::opengl };
@@ -193,6 +195,14 @@ struct cfg_root : cfg::node
 			cfg::_bool use_rebar_upload_heap{ this, "Use Re-BAR for GPU uploads", true, false };
 
 		} vk{ this };
+
+		struct node_mtl : cfg::node
+		{
+			node_mtl(cfg::node* _this) : cfg::node(_this, "Metal") {}
+
+			cfg::string adapter{ this, "Adapter" };
+
+		} mtl{ this };
 
 		struct node_perf_overlay : cfg::node
 		{

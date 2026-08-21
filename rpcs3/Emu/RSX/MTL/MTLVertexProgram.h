@@ -46,6 +46,9 @@ namespace mtl
 		shader_binding_location constants_buffer;
 		shader_binding_location instancing_lookup_buffer;
 		shader_binding_location instancing_constants_buffer;
+		shader_binding_location sampler_state_buffer;
+		shader_binding_location line_mapping_buffer =
+			vertex_stage_binding_table::buffer(vertex_stage_binding_table::line_mapping_buffer);
 		std::array<shader_binding_location, vertex_texture_unit_count> textures{};
 		std::array<shader_binding_location, vertex_texture_unit_count> samplers{};
 		u8 texture_mask = 0;

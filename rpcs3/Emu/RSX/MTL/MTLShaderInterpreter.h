@@ -69,7 +69,7 @@ namespace mtl
 		u32 vertex_instruction_buffer = 9;
 		u32 fragment_instruction_buffer = 5;
 		u32 fragment_texture_first = 0;
-		u32 fragment_texture_count = 64;
+		u32 fragment_texture_count = 96;
 		u32 fragment_sampler_first = 0;
 		u32 fragment_sampler_count = 16;
 	};

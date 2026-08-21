@@ -702,7 +702,8 @@ namespace
 		{
 			const auto &returnvalue = upload_untouched<T>(src, dst, draw_mode, restart_index_enabled, restart_index);
 			const auto index_count = dst.size_bytes() / sizeof(T);
-			dst[index_count] = src[0];
+			ensure(index_count > 0);
+			dst[index_count - 1] = src[0];
 			return returnvalue;
 		}
 		case rsx::primitive_type::polygon:

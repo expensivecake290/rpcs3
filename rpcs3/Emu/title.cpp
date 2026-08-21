@@ -91,7 +91,8 @@ namespace rpcs3
 #endif
 						break;
 					case video_renderer::vulkan:
-						title_string += title_data.vulkan_adapter;
+					case video_renderer::metal:
+						title_string += title_data.graphics_adapter;
 						break;
 					}
 					break;

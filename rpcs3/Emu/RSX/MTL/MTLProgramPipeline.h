@@ -111,7 +111,8 @@ namespace mtl
 			compiler_handle compiler = nullptr, pipeline_archive_handle lookup_archive = nullptr);
 		void create_compute(render_device& device, const compute_pipeline_configuration& configuration,
 			compiler_handle compiler = nullptr, pipeline_archive_handle lookup_archive = nullptr);
-		[[nodiscard]] std::unique_ptr<MTLProgramPipeline> create_binding_instance() const;
+		[[nodiscard]] std::unique_ptr<MTLProgramPipeline> create_binding_instance(
+			bool inherit_bindings = false) const;
 		void destroy();
 
 		void set_buffer(msl_shader_stage stage, u32 index, const argument_buffer_binding& binding);

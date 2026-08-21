@@ -157,6 +157,7 @@ namespace mtl
 		}
 		catch (...)
 		{
+			// Destruction cannot surface a cleanup failure to the caller.
 		}
 	}
 
@@ -330,7 +331,7 @@ namespace mtl
 		}
 		const u64 signal_value = m_impl->stats.timeline_value + 1;
 		info.queue = m_impl->configuration.queue;
-		info.signals.push_back(m_impl->timeline.signal_operation(signal_value));
+		info.signal_operations.push_back(m_impl->timeline.signal_operation(signal_value));
 		if (m_impl->configuration.mode == async_scheduler_mode::host_synchronized)
 		{
 			info.wait_for_completion = true;

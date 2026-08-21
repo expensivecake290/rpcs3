@@ -139,6 +139,10 @@ namespace mtl
 		pipeline_emulation_sample_shading = 1 << 2,
 		pipeline_emulation_depth_bounds = 1 << 3,
 		pipeline_emulation_primitive_restart = 1 << 4,
+		pipeline_emulation_signed_blend = 1 << 5,
+		pipeline_emulation_reverse_signed_blend = 1 << 6,
+		pipeline_emulation_wide_lines = 1 << 7,
+		pipeline_emulation_polygon_mode = 1 << 8,
 	};
 
 	struct shader_function_identity

@@ -224,6 +224,11 @@ if(USE_SDL)
 		endif()
 	else()
 		message(STATUS "Using static SDL3 from 3rdparty")
+		if(APPLE)
+			# RPCS3 links its own HID implementation on macOS. Building SDL's
+			# private copy as well exports the same Darwin helper symbols.
+			set(SDL_HIDAPI OFF CACHE BOOL "Use SDL's bundled HID implementation" FORCE)
+		endif()
 		add_subdirectory(libsdl-org EXCLUDE_FROM_ALL)
 		target_compile_definitions(SDL3-static INTERFACE -DHAVE_SDL3=1)
 		set(SDL3_TARGET SDL3-static)

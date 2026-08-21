@@ -62,6 +62,7 @@ namespace mtl
 		bool low_precision_comparisons = false;
 		bool emulate_shadow_compare = false;
 		bool round_8bit_outputs = true;
+		bool framebuffer_fetch = false;
 		bool log_source = false;
 		std::string label;
 	};
@@ -168,5 +169,6 @@ namespace mtl
 		[[nodiscard]] std::span<const u32> constant_offsets() const;
 		[[nodiscard]] library_handle library() const;
 		[[nodiscard]] function_handle function() const;
+		[[nodiscard]] bool uses_framebuffer_fetch() const;
 	};
 }

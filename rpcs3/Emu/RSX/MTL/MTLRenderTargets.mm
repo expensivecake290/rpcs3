@@ -105,6 +105,28 @@ namespace mtl
 				texture_usage_copy_destination | texture_usage_pixel_format_view |
 				(depth ? texture_usage_depth_stencil : texture_usage_render_target | texture_usage_shader_write);
 			info.aspects = format.aspects;
+			if (depth)
+			{
+				switch (static_cast<rsx::surface_depth_format2>(format.source_format))
+				{
+				case rsx::surface_depth_format2::z16_uint:
+					info.format_class = rsx::RSX_FORMAT_CLASS_DEPTH16_UNORM;
+					break;
+				case rsx::surface_depth_format2::z16_float:
+					info.format_class = rsx::RSX_FORMAT_CLASS_DEPTH16_FLOAT;
+					break;
+				case rsx::surface_depth_format2::z24s8_uint:
+					info.format_class = rsx::RSX_FORMAT_CLASS_DEPTH24_UNORM_X8_PACK32;
+					break;
+				case rsx::surface_depth_format2::z24s8_float:
+					info.format_class = rsx::RSX_FORMAT_CLASS_DEPTH24_FLOAT_X8_PACK32;
+					break;
+				}
+			}
+			else
+			{
+				info.format_class = rsx::RSX_FORMAT_CLASS_COLOR;
+			}
 			info.storage = storage_mode::private_;
 			info.pool = allocation_pool::surface_cache;
 			info.label = std::move(label);
@@ -241,16 +263,12 @@ namespace mtl
 
 	render_target* as_render_target(image* resource)
 	{
-		auto* result = dynamic_cast<render_target*>(resource);
-		if (!result) fmt::throw_exception("Metal image is not a render target");
-		return result;
+		return dynamic_cast<render_target*>(resource);
 	}
 
 	const render_target* as_render_target(const image* resource)
 	{
-		auto* result = dynamic_cast<const render_target*>(resource);
-		if (!result) fmt::throw_exception("Metal image is not a render target");
-		return result;
+		return dynamic_cast<const render_target*>(resource);
 	}
 
 

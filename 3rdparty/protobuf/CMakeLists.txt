@@ -24,6 +24,9 @@ else()
 	option(protobuf_MSVC_STATIC_RUNTIME "Link static runtime libraries" OFF)
 
 	add_subdirectory(protobuf EXCLUDE_FROM_ALL)
-	target_include_directories(3rdparty_protobuf SYSTEM INTERFACE protobuf/src)
+	# Keep bundled protobuf ahead of broad package-manager include roots. Those
+	# roots may contain a different protobuf release whose headers cannot be
+	# mixed with this bundled runtime or RPCS3's generated sources.
+	target_include_directories(3rdparty_protobuf BEFORE INTERFACE protobuf/src)
 	target_link_libraries(3rdparty_protobuf INTERFACE libprotobuf)
 endif()

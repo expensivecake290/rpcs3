@@ -99,6 +99,8 @@ namespace mtl
 
 		[[nodiscard]] const sampler& null_sampler();
 		[[nodiscard]] image_view& null_image_view(command_buffer& command, texture_type type);
+		[[nodiscard]] image_view& null_image_view(command_buffer& command, texture_type type,
+			u64 pixel_format);
 		[[nodiscard]] scratch_image_allocation acquire_typeless_helper(command_buffer& command,
 			u64 pixel_format, u64 compatibility_class, u32 width, u32 height,
 			u32 usage = texture_usage_copy_source | texture_usage_copy_destination);

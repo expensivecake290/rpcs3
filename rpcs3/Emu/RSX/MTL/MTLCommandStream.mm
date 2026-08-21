@@ -300,6 +300,7 @@ namespace mtl
 		}
 		catch (...)
 		{
+			// Destruction cannot surface a cleanup failure to the caller.
 		}
 	}
 
